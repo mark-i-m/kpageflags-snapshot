@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    io::{self, BufRead, ErrorKind},
+    io::{self, BufRead},
 };
 
 const KPAGEFLAGS_PATH: &str = "/proc/kpageflags";
@@ -54,6 +54,8 @@ impl KPF {
 #[repr(transparent)]
 struct KPageFlags(u64);
 
+const KPF_SIZE: usize = std::mem::size_of::<KPageFlags>();
+
 impl KPageFlags {
     /// Returns an empty set of flags.
     pub const fn empty() -> Self {
@@ -88,18 +90,20 @@ impl<B: BufRead> KPageFlagsReader<B> {
         KPageFlagsReader { buf_reader }
     }
 
-    /// Read exactly enough page flags to fill `buf` or return an error.
-    pub fn read(&mut self, buf: &mut [KPageFlags]) -> io::Result<()> {
+    /// Similar to `Read::read`, but reads the bytes as `KPageFlags`, and returns the number of
+    /// flags in the buffer, rather than the number of bytes.
+    pub fn read(&mut self, buf: &mut [KPageFlags]) -> io::Result<usize> {
         // Cast as an array of bytes to do the read.
         let buf: &mut [u8] = unsafe {
             let ptr: *mut u8 = buf.as_mut_ptr() as *mut u8;
-            let len = buf.len() * std::mem::size_of::<KPageFlags>();
+            let len = buf.len() * KPF_SIZE;
             std::slice::from_raw_parts_mut(ptr, len)
         };
 
-        self.buf_reader.read_exact(buf)?;
-
-        Ok(())
+        self.buf_reader.read(buf).map(|bytes| {
+            assert_eq!(bytes % KPF_SIZE, 0);
+            bytes / KPF_SIZE
+        })
     }
 }
 
@@ -115,19 +119,18 @@ fn main() -> io::Result<()> {
     let mut run_flags = KPageFlags::empty();
 
     loop {
-        match flags.read(&mut buf) {
-            Err(err) if matches!(err.kind(), ErrorKind::UnexpectedEof) => {
-                break;
-            }
-
+        let nflags = match flags.read(&mut buf) {
             Err(err) => {
                 panic!("{:?}", err);
             }
 
-            Ok(()) => {}
-        }
+            // EOF
+            Ok(0) => break,
 
-        for flags in buf.iter() {
+            Ok(nflags) => nflags,
+        };
+
+        for flags in buf.iter().take(nflags) {
             if pfn == 0 {
                 run_flags = *flags;
             }
