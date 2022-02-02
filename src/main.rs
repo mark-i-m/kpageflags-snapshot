@@ -66,6 +66,18 @@ impl KPageFlags {
     }
 }
 
+impl std::fmt::Display for KPageFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for fi in 0..(KPF::MAX as u64) {
+            if self.all(1 << fi) {
+                write!(f, "{:?} ", KPF::from(fi))?;
+            }
+        }
+
+        writeln!(f)
+    }
+}
+
 /// Wrapper around a `BufRead` type that for the `/proc/kpageflags` file.
 struct KPageFlagsReader<B: BufRead> {
     buf_reader: B,
@@ -99,6 +111,9 @@ fn main() -> io::Result<()> {
     let mut buf = vec![KPageFlags::empty(); 1 << (21 - 3)];
     let mut pfn = 0;
 
+    let mut run_start = 0;
+    let mut run_flags = KPageFlags::empty();
+
     loop {
         match flags.read(&mut buf) {
             Err(err) if matches!(err.kind(), ErrorKind::UnexpectedEof) => {
@@ -113,14 +128,11 @@ fn main() -> io::Result<()> {
         }
 
         for flags in buf.iter() {
-            print!("{} ", pfn);
-            for fi in 0..(KPF::MAX as u64) {
-                if flags.all(1 << fi) {
-                    print!("{:?} ", KPF::from(fi));
-                }
+            if run_start != 0 && *flags != run_flags {
+                print!("{}-{} {}", run_start, pfn - 1, run_flags);
+                run_start = pfn;
+                run_flags = *flags;
             }
-
-            println!();
 
             pfn += 1;
         }
