@@ -128,7 +128,11 @@ fn main() -> io::Result<()> {
         }
 
         for flags in buf.iter() {
-            if run_start != 0 && *flags != run_flags {
+            if pfn == 0 {
+                run_flags = *flags;
+            }
+
+            if *flags != run_flags {
                 print!("{}-{} {}", run_start, pfn - 1, run_flags);
                 run_start = pfn;
                 run_flags = *flags;
