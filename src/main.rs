@@ -134,9 +134,9 @@ fn main() -> io::Result<()> {
 
             if *flags != run_flags {
                 if run_start == pfn - 1 {
-                    print!("{} {}", run_start, run_flags);
+                    print!("{:010X}            {}", run_start, run_flags);
                 } else {
-                    print!("{}-{} {}", run_start, pfn - 1, run_flags);
+                    print!("{:010X}-{:010X} {}", run_start, pfn - 1, run_flags);
                 }
                 run_start = pfn;
                 run_flags = *flags;
