@@ -5,34 +5,49 @@ use std::{
     io::{self, BufRead, ErrorKind},
 };
 
-const KPF_LOCKED: u64 = 1 << 0;
-const KPF_ERROR: u64 = 1 << 1;
-const KPF_REFERENCED: u64 = 1 << 2;
-const KPF_UPTODATE: u64 = 1 << 3;
-const KPF_DIRTY: u64 = 1 << 4;
-const KPF_LRU: u64 = 1 << 5;
-const KPF_ACTIVE: u64 = 1 << 6;
-const KPF_SLAB: u64 = 1 << 7;
-const KPF_WRITEBACK: u64 = 1 << 8;
-const KPF_RECLAIM: u64 = 1 << 9;
-const KPF_BUDDY: u64 = 1 << 10;
-const KPF_MMAP: u64 = 1 << 11;
-const KPF_ANON: u64 = 1 << 12;
-const KPF_SWAPCACHE: u64 = 1 << 13;
-const KPF_SWAPBACKED: u64 = 1 << 14;
-const KPF_COMPOUND_HEAD: u64 = 1 << 15;
-const KPF_COMPOUND_TAIL: u64 = 1 << 16;
-const KPF_HUGE: u64 = 1 << 17;
-const KPF_UNEVICTABLE: u64 = 1 << 18;
-const KPF_HWPOISON: u64 = 1 << 19;
-const KPF_NOPAGE: u64 = 1 << 20;
-const KPF_KSM: u64 = 1 << 21;
-const KPF_THP: u64 = 1 << 22;
-const KPF_BALLOON: u64 = 1 << 23;
-const KPF_ZERO_PAGE: u64 = 1 << 24;
-const KPF_IDLE: u64 = 1 << 25;
-
 const KPAGEFLAGS_PATH: &str = "/proc/kpageflags";
+
+// It's not actually dead code... the `KPF::from` function allows constructing all of them...
+#[allow(dead_code)]
+#[derive(Copy, Clone, Debug)]
+#[repr(u64)]
+enum KPF {
+    Locked,
+    Error,
+    Referenced,
+    Uptodate,
+    Dirty,
+    Lru,
+    Active,
+    Slab,
+    Writeback,
+    Reclaim,
+    Buddy,
+    Mmap,
+    Anon,
+    Swapcache,
+    Swapbacked,
+    CompoundHead,
+    CompoundTail,
+    Huge,
+    Unevictable,
+    Hwpoison,
+    Nopage,
+    Ksm,
+    Thp,
+    Balloon,
+    ZeroPage,
+    Idle,
+
+    MAX,
+}
+
+impl KPF {
+    pub fn from(val: u64) -> Self {
+        assert!(val < (KPF::MAX as u64));
+        unsafe { std::mem::transmute(val) }
+    }
+}
 
 /// Represents the flags for a single physical page frame.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, PartialOrd)]
@@ -48,11 +63,6 @@ impl KPageFlags {
     /// Returns `true` if all bits in the given mask are set and `false` if any bits are not set.
     pub fn all(&self, mask: u64) -> bool {
         self.0 & mask == mask
-    }
-
-    /// Returns `true` if any bits in the given mask are set and `false` if all bits are not set.
-    pub fn any(&self, mask: u64) -> bool {
-        self.0 & mask > 0
     }
 }
 
@@ -103,7 +113,14 @@ fn main() -> io::Result<()> {
         }
 
         for flags in buf.iter() {
-            println!("{} {:?}", pfn, flags);
+            print!("{} ", pfn);
+            for fi in 0..(KPF::MAX as u64) {
+                if flags.all(1 << fi) {
+                    print!("{:?} ", KPF::from(fi));
+                }
+            }
+
+            println!();
 
             pfn += 1;
         }
