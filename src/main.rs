@@ -92,6 +92,12 @@ impl KPageFlags {
     }
 }
 
+impl From<KPF> for KPageFlags {
+    fn from(kpf: KPF) -> Self {
+        KPageFlags(kpf as u64)
+    }
+}
+
 impl std::fmt::Display for KPageFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for fi in KPF::values() {
@@ -188,8 +194,13 @@ fn main() -> io::Result<()> {
     }
 
     // Print some stats about the different types of page usage.
+    let mut total = 0;
     for (flags, npages) in stats.into_iter() {
         let size = npages * 4;
+        if flags != KPageFlags::from(KPF::Nopage) {
+            total += size;
+        }
+
         let size = if size >= 1024 {
             format!("{:6}MB", size >> 10)
         } else {
@@ -197,6 +208,8 @@ fn main() -> io::Result<()> {
         };
         println!("{} {}", size, flags);
     }
+
+    println!("TOTAL: {}MB", total >> 10);
 
     Ok(())
 }
