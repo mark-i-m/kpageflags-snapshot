@@ -160,9 +160,17 @@ fn main() -> io::Result<()> {
 
             if *flags != run_flags {
                 if run_start == pfn - 1 {
-                    print!("{:010X}            {}", run_start, run_flags);
+                    let size = 4; // KB
+                    print!("{:010X}            {:5}KB {}", run_start, size, run_flags);
                 } else {
-                    print!("{:010X}-{:010X} {}", run_start, pfn - 1, run_flags);
+                    let size = (pfn - 1 - run_start) * 4;
+                    print!(
+                        "{:010X}-{:010X} {:5}KB {}",
+                        run_start,
+                        pfn - 1,
+                        size,
+                        run_flags
+                    );
                 }
                 run_start = pfn;
                 run_flags = *flags;
