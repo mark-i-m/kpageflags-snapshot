@@ -183,7 +183,7 @@ fn main() -> io::Result<()> {
                     );
                 }
 
-                *stats.entry(flags).or_insert(0) += pfn - run_start;
+                *stats.entry(run_flags).or_insert(0) += pfn - run_start;
 
                 run_start = pfn;
                 run_flags = flags;
