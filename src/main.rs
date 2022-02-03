@@ -12,7 +12,7 @@ const KPAGEFLAGS_PATH: &str = "/proc/kpageflags";
 #[derive(Copy, Clone, Debug)]
 #[repr(u64)]
 enum KPF {
-    Locked,
+    Locked = 0,
     Error,
     Referenced,
     Uptodate,
@@ -40,13 +40,35 @@ enum KPF {
     Idle,
     Pgtable,
 
-    MAX,
+    MAX1,
+
+    Reserved = 32,
+    Mlocked,
+    Mappedtodisk,
+    Private,
+    Private2,
+    OwnerPrivate,
+    Arch,
+    Uncached,
+    Softdirty,
+    Arch2,
+
+    MAX2,
 }
 
 impl KPF {
     pub fn from(val: u64) -> Self {
-        assert!(val < (KPF::MAX as u64));
+        assert!(Self::valid(val));
         unsafe { std::mem::transmute(val) }
+    }
+
+    pub fn valid(val: u64) -> bool {
+        ((KPF::Locked as u64) <= val && val < (KPF::MAX1 as u64))
+            || ((KPF::Reserved as u64) <= val && val < (KPF::MAX2 as u64))
+    }
+
+    pub fn values() -> impl Iterator<Item = u64> {
+        ((KPF::Locked as u64)..(KPF::MAX1 as u64)).chain((KPF::Reserved as u64)..(KPF::MAX2 as u64))
     }
 }
 
@@ -71,7 +93,7 @@ impl KPageFlags {
 
 impl std::fmt::Display for KPageFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for fi in 0..(KPF::MAX as u64) {
+        for fi in KPF::values() {
             if self.all(1 << fi) {
                 write!(f, "{:?} ", KPF::from(fi))?;
             }
