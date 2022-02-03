@@ -194,6 +194,7 @@ fn main() -> io::Result<()> {
     }
 
     // Print some stats about the different types of page usage.
+    println!("SUMMARY");
     let mut total = 0;
     for (flags, npages) in stats.into_iter() {
         let size = npages * 4;
