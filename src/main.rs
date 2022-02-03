@@ -100,7 +100,7 @@ impl std::fmt::Display for KPageFlags {
             }
         }
 
-        writeln!(f)
+        Ok(())
     }
 }
 
@@ -165,10 +165,10 @@ fn main() -> io::Result<()> {
             if flags != run_flags {
                 if run_start == pfn - 1 {
                     let size = 4; // KB
-                    print!("{:010X}            {:5}KB {}", run_start, size, run_flags);
+                    println!("{:010X}            {:5}KB {}", run_start, size, run_flags);
                 } else {
                     let size = (pfn - 1 - run_start) * 4;
-                    print!(
+                    println!(
                         "{:010X}-{:010X} {:5}KB {}",
                         run_start,
                         pfn - 1,
