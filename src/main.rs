@@ -167,7 +167,7 @@ fn main() -> io::Result<()> {
                     let size = 4; // KB
                     println!("{:010X}            {:8}KB {}", run_start, size, run_flags);
                 } else {
-                    let size = (pfn - 1 - run_start) * 4;
+                    let size = (pfn - run_start) * 4;
                     println!(
                         "{:010X}-{:010X} {:8}KB {}",
                         run_start,
@@ -177,7 +177,7 @@ fn main() -> io::Result<()> {
                     );
                 }
 
-                *stats.entry(flags).or_insert(0) += pfn - 1 - run_start;
+                *stats.entry(flags).or_insert(0) += pfn - run_start;
 
                 run_start = pfn;
                 run_flags = flags;
