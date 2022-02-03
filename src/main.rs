@@ -35,9 +35,10 @@ enum KPF {
     Nopage,
     Ksm,
     Thp,
-    Balloon,
+    Offline,
     ZeroPage,
     Idle,
+    Pgtable,
 
     MAX,
 }
