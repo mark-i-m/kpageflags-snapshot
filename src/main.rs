@@ -1,7 +1,7 @@
 //! Reads /proc/kpageflags on Linux 5.17 to snapshot the usage of system memory.
 
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     fs,
     io::{self, BufRead},
 };
@@ -74,7 +74,7 @@ impl KPF {
 }
 
 /// Represents the flags for a single physical page frame.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(transparent)]
 struct KPageFlags(u64);
 
@@ -136,7 +136,7 @@ fn main() -> io::Result<()> {
     let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
     let mut flags = KPageFlagsReader::new(reader);
 
-    let mut stats = HashMap::new();
+    let mut stats = BTreeMap::new();
 
     let mut buf = vec![KPageFlags::empty(); 1 << (21 - 3)];
     let mut pfn = 0;
@@ -165,11 +165,11 @@ fn main() -> io::Result<()> {
             if flags != run_flags {
                 if run_start == pfn - 1 {
                     let size = 4; // KB
-                    println!("{:010X}            {:5}KB {}", run_start, size, run_flags);
+                    println!("{:010X}            {:8}KB {}", run_start, size, run_flags);
                 } else {
                     let size = (pfn - 1 - run_start) * 4;
                     println!(
-                        "{:010X}-{:010X} {:5}KB {}",
+                        "{:010X}-{:010X} {:8}KB {}",
                         run_start,
                         pfn - 1,
                         size,
@@ -189,7 +189,13 @@ fn main() -> io::Result<()> {
 
     // Print some stats about the different types of page usage.
     for (flags, npages) in stats.into_iter() {
-        println!("{:7}KB {}", npages, flags);
+        let size = npages * 4;
+        let size = if size >= 1024 {
+            format!("{:6}MB", size >> 10)
+        } else {
+            format!("{:6}KB", size)
+        };
+        println!("{} {}", size, flags);
     }
 
     Ok(())
