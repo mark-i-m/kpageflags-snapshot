@@ -1,6 +1,7 @@
 //! Reads /proc/kpageflags on Linux 5.17 to snapshot the usage of system memory.
 
 use std::{
+    collections::HashMap,
     fs,
     io::{self, BufRead},
 };
@@ -135,9 +136,10 @@ fn main() -> io::Result<()> {
     let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
     let mut flags = KPageFlagsReader::new(reader);
 
+    let mut stats = HashMap::new();
+
     let mut buf = vec![KPageFlags::empty(); 1 << (21 - 3)];
     let mut pfn = 0;
-
     let mut run_start = 0;
     let mut run_flags = KPageFlags::empty();
 
@@ -154,11 +156,13 @@ fn main() -> io::Result<()> {
         };
 
         for flags in buf.iter().take(nflags) {
+            let flags = *flags;
+
             if pfn == 0 {
-                run_flags = *flags;
+                run_flags = flags;
             }
 
-            if *flags != run_flags {
+            if flags != run_flags {
                 if run_start == pfn - 1 {
                     let size = 4; // KB
                     print!("{:010X}            {:5}KB {}", run_start, size, run_flags);
@@ -172,12 +176,20 @@ fn main() -> io::Result<()> {
                         run_flags
                     );
                 }
+
+                *stats.entry(flags).or_insert(0) += pfn - 1 - run_start;
+
                 run_start = pfn;
-                run_flags = *flags;
+                run_flags = flags;
             }
 
             pfn += 1;
         }
+    }
+
+    // Print some stats about the different types of page usage.
+    for (flags, npages) in stats.into_iter() {
+        println!("{:7}KB {}", npages, flags);
     }
 
     Ok(())
