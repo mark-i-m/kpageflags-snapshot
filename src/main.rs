@@ -299,14 +299,11 @@ fn main() -> io::Result<()> {
         if region.end == region.start + 1 {
             // The only reason we specify `size` here is so that `println` can handle the width of
             // the field, so all the columns line up when we print...
-            println!(
-                " {:010X}              {:8}KB {}",
-                region.start, 4, region.flags
-            );
+            println!("{:010X}           {:8}KB {}", region.start, 4, region.flags);
         } else {
             let size = (region.end - region.start) * 4;
             println!(
-                "[{:010X}, {:010X}) {:8}KB {}",
+                "{:010X}-{:010X} {:8}KB {}",
                 region.start, region.end, size, region.flags,
             );
         }
