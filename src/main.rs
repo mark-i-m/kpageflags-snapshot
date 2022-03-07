@@ -4,6 +4,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::{self, BufRead},
+    ops::{BitOr, BitOrAssign},
 };
 
 const KPAGEFLAGS_PATH: &str = "/proc/kpageflags";
@@ -90,11 +91,42 @@ impl KPageFlags {
     pub fn all(&self, mask: u64) -> bool {
         self.0 & mask == mask
     }
+
+    /// Returns `true` if _consecutive_ regions with flags `first` and then `second` can be
+    /// combined into one big region.
+    pub fn can_combine(first: Self, second: Self) -> bool {
+        // Combine identical sets of pages.
+        if first == second {
+            return true;
+        }
+
+        // Combine compound head and compound tail pages.
+        if first.all(1 << (KPF::CompoundHead as u64)) && second.all(1 << (KPF::CompoundTail as u64))
+        {
+            return true;
+        }
+
+        false
+    }
+}
+
+impl BitOr for KPageFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        KPageFlags(self.0 | rhs.0)
+    }
+}
+
+impl BitOrAssign for KPageFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
 }
 
 impl From<KPF> for KPageFlags {
     fn from(kpf: KPF) -> Self {
-        KPageFlags(kpf as u64)
+        KPageFlags(1 << (kpf as u64))
     }
 }
 
@@ -137,6 +169,120 @@ impl<B: BufRead> KPageFlagsReader<B> {
     }
 }
 
+/// Turns a `KPageFlagsReader` into a proper (efficient) iterator over flags.
+struct KPageFlagsIterator<B: BufRead> {
+    /// The reader we are reading from.
+    reader: KPageFlagsReader<B>,
+
+    /// Temporary buffer for data read but not consumed yet.
+    buf: [KPageFlags; 1 << (21 - 3)],
+    /// The number of valid flags in the buffer.
+    nflags: usize,
+    /// The index of the first valid, unconsumed flag in the buffer, if `nflags > 0`.
+    idx: usize,
+}
+
+impl<B: BufRead> KPageFlagsIterator<B> {
+    pub fn new(reader: KPageFlagsReader<B>) -> Self {
+        KPageFlagsIterator {
+            reader,
+            buf: [KPageFlags::empty(); 1 << (21 - 3)],
+            nflags: 0,
+            idx: 0,
+        }
+    }
+}
+
+impl<B: BufRead> Iterator for KPageFlagsIterator<B> {
+    type Item = KPageFlags;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Need to read some more?
+        if self.nflags == 0 {
+            self.nflags = match self.reader.read(&mut self.buf) {
+                Err(err) => {
+                    panic!("{:?}", err);
+                }
+
+                // EOF
+                Ok(0) => return None,
+
+                Ok(nflags) => nflags,
+            };
+            self.idx = 0;
+        }
+
+        // Return the first valid flags.
+        let item = self.buf[self.idx];
+
+        self.nflags -= 1;
+        self.idx += 1;
+
+        Some(item)
+    }
+}
+
+struct CombinedPageFlags {
+    /// Starting PFN (inclusive).
+    pub start: u64,
+    /// Ending PFN (exlusive).
+    pub end: u64,
+
+    /// Flags of the indicated region.
+    pub flags: KPageFlags,
+}
+
+/// Consumes an iterator over flags and transforms it to combine various elements and simplify
+/// flags. This makes the stream a bit easier to plot and produce a markov process from.
+struct KPageFlagsProcessor<I: Iterator<Item = KPageFlags>> {
+    flags: std::iter::Peekable<std::iter::Enumerate<I>>,
+}
+
+impl<I: Iterator<Item = KPageFlags>> KPageFlagsProcessor<I> {
+    pub fn new(iter: I) -> Self {
+        Self {
+            flags: iter.enumerate().peekable(),
+        }
+    }
+}
+
+impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
+    type Item = CombinedPageFlags;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Start with whatever the next flags are.
+        let mut combined = {
+            let (start, flags) = if let Some((start, flags)) = self.flags.next() {
+                (start as u64, flags)
+            } else {
+                return None;
+            };
+
+            CombinedPageFlags {
+                start,
+                end: start + 1,
+                flags,
+            }
+        };
+
+        // Look ahead 1 element to see if we break the run...
+        while let Some((_, next_flags)) = self.flags.peek() {
+            // If this element can be combined with `combined`, combine it.
+            if KPageFlags::can_combine(combined.flags, *next_flags) {
+                let (pfn, flags) = self.flags.next().unwrap();
+                combined.end = pfn as u64 + 1; // exclusive
+                combined.flags |= flags;
+            }
+            // Otherwise, end the run and return here.
+            else {
+                break;
+            }
+        }
+
+        Some(combined)
+    }
+}
+
 fn main() -> io::Result<()> {
     let path = std::env::args()
         .skip(1)
@@ -144,57 +290,28 @@ fn main() -> io::Result<()> {
         .unwrap_or_else(|| KPAGEFLAGS_PATH.into());
     let file = fs::File::open(path)?;
     let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
-    let mut flags = KPageFlagsReader::new(reader);
+    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(KPageFlagsReader::new(reader)));
 
     let mut stats = BTreeMap::new();
 
-    let mut buf = vec![KPageFlags::empty(); 1 << (21 - 3)];
-    let mut pfn = 0;
-    let mut run_start = 0;
-    let mut run_flags = KPageFlags::empty();
-
-    loop {
-        let nflags = match flags.read(&mut buf) {
-            Err(err) => {
-                panic!("{:?}", err);
-            }
-
-            // EOF
-            Ok(0) => break,
-
-            Ok(nflags) => nflags,
-        };
-
-        for flags in buf.iter().take(nflags) {
-            let flags = *flags;
-
-            if pfn == 0 {
-                run_flags = flags;
-            }
-
-            if flags != run_flags {
-                if run_start == pfn - 1 {
-                    let size = 4; // KB
-                    println!("{:010X}            {:8}KB {}", run_start, size, run_flags);
-                } else {
-                    let size = (pfn - run_start) * 4;
-                    println!(
-                        "{:010X}-{:010X} {:8}KB {}",
-                        run_start,
-                        pfn - 1,
-                        size,
-                        run_flags
-                    );
-                }
-
-                *stats.entry(run_flags).or_insert(0) += pfn - run_start;
-
-                run_start = pfn;
-                run_flags = flags;
-            }
-
-            pfn += 1;
+    // Iterate over contiguous physical memory regions with similar properties.
+    for region in flags {
+        if region.end == region.start + 1 {
+            // The only reason we specify `size` here is so that `println` can handle the width of
+            // the field, so all the columns line up when we print...
+            println!(
+                " {:010X}              {:8}KB {}",
+                region.start, 4, region.flags
+            );
+        } else {
+            let size = (region.end - region.start) * 4;
+            println!(
+                "[{:010X}, {:010X}) {:8}KB {}",
+                region.start, region.end, size, region.flags,
+            );
         }
+
+        *stats.entry(region.flags).or_insert(0) += region.end - region.start;
     }
 
     // Print some stats about the different types of page usage.
