@@ -138,7 +138,11 @@ impl<B: BufRead> KPageFlagsReader<B> {
 }
 
 fn main() -> io::Result<()> {
-    let file = fs::File::open(KPAGEFLAGS_PATH)?;
+    let path = std::env::args()
+        .skip(1)
+        .next()
+        .unwrap_or_else(|| KPAGEFLAGS_PATH.into());
+    let file = fs::File::open(path)?;
     let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
     let mut flags = KPageFlagsReader::new(reader);
 
