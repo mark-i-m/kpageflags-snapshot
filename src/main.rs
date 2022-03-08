@@ -5,15 +5,42 @@ use std::{
     fs,
     io::{self, BufRead},
     ops::{BitOr, BitOrAssign},
+    path::PathBuf,
+    str::FromStr,
 };
+
+use clap::Parser;
 
 const KPAGEFLAGS_PATH: &str = "/proc/kpageflags";
 
-// It's not actually dead code... the `KPF::from` function allows constructing all of them...
-#[allow(dead_code)]
-#[derive(Copy, Clone, Debug)]
-#[repr(u64)]
-enum KPF {
+/// Easier to derive FromStr...
+macro_rules! kpf {
+    (enum KPF { $($name:ident $(= $val:literal)?),+ $(,)? }) => {
+        // It's not actually dead code... the `KPF::from` function allows constructing all of them...
+        #[allow(dead_code)]
+        #[derive(Copy, Clone, Debug)]
+        #[repr(u64)]
+        enum KPF {
+            $($name $(= $val)?),+
+        }
+
+        impl FromStr for KPF {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $(
+                        stringify!($name) => Ok(KPF::$name),
+                    )+
+
+                    other => Err(format!("unknown flag: {}", other)),
+                }
+            }
+        }
+    };
+}
+
+kpf! { enum KPF {
     Locked = 0,
     Error = 1,
     Referenced = 2,
@@ -56,7 +83,7 @@ enum KPF {
     Arch2 = 41,
 
     MAX2,
-}
+}}
 
 impl KPF {
     pub fn from(val: u64) -> Self {
@@ -107,6 +134,11 @@ impl KPageFlags {
         }
 
         false
+    }
+
+    /// Clear all bits set in the `mask` from this `KPageFlags`.
+    pub fn clear(&mut self, mask: u64) {
+        self.0 &= !mask;
     }
 }
 
@@ -236,12 +268,22 @@ struct CombinedPageFlags {
 /// flags. This makes the stream a bit easier to plot and produce a markov process from.
 struct KPageFlagsProcessor<I: Iterator<Item = KPageFlags>> {
     flags: std::iter::Peekable<std::iter::Enumerate<I>>,
+    ignored_flags: u64,
 }
 
 impl<I: Iterator<Item = KPageFlags>> KPageFlagsProcessor<I> {
-    pub fn new(iter: I) -> Self {
+    pub fn new(iter: I, ignored_flags: Vec<KPF>) -> Self {
         Self {
             flags: iter.enumerate().peekable(),
+            ignored_flags: {
+                let mut mask = 0;
+
+                for f in ignored_flags.into_iter() {
+                    mask |= 1 << (f as u64);
+                }
+
+                mask
+            },
         }
     }
 }
@@ -252,11 +294,13 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
     fn next(&mut self) -> Option<Self::Item> {
         // Start with whatever the next flags are.
         let mut combined = {
-            let (start, flags) = if let Some((start, flags)) = self.flags.next() {
+            let (start, mut flags) = if let Some((start, flags)) = self.flags.next() {
                 (start as u64, flags)
             } else {
                 return None;
             };
+
+            flags.clear(self.ignored_flags);
 
             CombinedPageFlags {
                 start,
@@ -267,10 +311,14 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
 
         // Look ahead 1 element to see if we break the run...
         while let Some((_, next_flags)) = self.flags.peek() {
+            let mut next_flags = *next_flags;
+            next_flags.clear(self.ignored_flags);
+
             // If this element can be combined with `combined`, combine it.
-            if KPageFlags::can_combine(combined.flags, *next_flags) {
-                let (pfn, flags) = self.flags.next().unwrap();
+            if KPageFlags::can_combine(combined.flags, next_flags) {
+                let (pfn, mut flags) = self.flags.next().unwrap();
                 combined.end = pfn as u64 + 1; // exclusive
+                flags.clear(self.ignored_flags);
                 combined.flags |= flags;
             }
             // Otherwise, end the run and return here.
@@ -283,14 +331,29 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
     }
 }
 
+/// A program to process the contents of `/proc/kpageflags`.
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    /// The path to the kpageflags. If not passed, use `/proc/kpageflags`.
+    #[clap(short, long, default_value = KPAGEFLAGS_PATH)]
+    file: PathBuf,
+
+    /// Ignore the given flag. Effectively, treat all pages as if the flag is unset. This can be
+    /// passed multiple times.
+    #[clap(name = "FLAG", long = "ignore", multiple_occurrences(true))]
+    ignored_flags: Vec<KPF>,
+}
+
 fn main() -> io::Result<()> {
-    let path = std::env::args()
-        .skip(1)
-        .next()
-        .unwrap_or_else(|| KPAGEFLAGS_PATH.into());
-    let file = fs::File::open(path)?;
+    let args = Args::parse();
+
+    let file = fs::File::open(args.file)?;
     let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
-    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(KPageFlagsReader::new(reader)));
+    let flags = KPageFlagsProcessor::new(
+        KPageFlagsIterator::new(KPageFlagsReader::new(reader)),
+        args.ignored_flags,
+    );
 
     let mut stats = BTreeMap::new();
 
@@ -299,7 +362,10 @@ fn main() -> io::Result<()> {
         if region.end == region.start + 1 {
             // The only reason we specify `size` here is so that `println` can handle the width of
             // the field, so all the columns line up when we print...
-            println!("{:010X}           {:8}KB {}", region.start, 4, region.flags);
+            println!(
+                "{:010X}            {:8}KB {}",
+                region.start, 4, region.flags
+            );
         } else {
             let size = (region.end - region.start) * 4;
             println!(
