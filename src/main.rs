@@ -340,17 +340,28 @@ struct Args {
     /// passed multiple times.
     #[clap(name = "FLAG", long = "ignore", multiple_occurrences(true))]
     ignored_flags: Vec<KPF>,
+
+    /// Whether to generate a Markov process.
+    #[clap(long)]
+    markov: bool,
 }
 
 fn main() -> io::Result<()> {
     let args = Args::parse();
 
-    let file = fs::File::open(args.file)?;
+    map_and_summary(&args)?;
+    markov(&args)?;
+
+    Ok(())
+}
+
+fn map_and_summary(args: &Args) -> io::Result<()> {
+    let file = fs::File::open(&args.file)?;
     let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
-    let flags = KPageFlagsProcessor::new(
-        KPageFlagsIterator::new(KPageFlagsReader::new(reader)),
-        args.ignored_flags,
-    );
+    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(
+        KPageFlagsReader::new(reader),
+        &args.ignored_flags,
+    ));
 
     let mut stats = BTreeMap::new();
 
@@ -392,6 +403,18 @@ fn main() -> io::Result<()> {
     }
 
     println!("TOTAL: {}MB", total >> 10);
+
+    Ok(())
+}
+
+fn markov(args: &Args) -> io::Result<()> {
+    let file = fs::File::open(&args.file)?;
+    let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
+    let flags = KPageFlagsIterator::new(KPageFlagsReader::new(reader), &args.ignored_flags);
+
+    for flag in flags {
+        todo!();
+    }
 
     Ok(())
 }
