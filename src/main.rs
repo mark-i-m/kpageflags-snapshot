@@ -212,15 +212,26 @@ struct KPageFlagsIterator<B: BufRead> {
     nflags: usize,
     /// The index of the first valid, unconsumed flag in the buffer, if `nflags > 0`.
     idx: usize,
+
+    ignored_flags: u64,
 }
 
 impl<B: BufRead> KPageFlagsIterator<B> {
-    pub fn new(reader: KPageFlagsReader<B>) -> Self {
+    pub fn new(reader: KPageFlagsReader<B>, ignored_flags: &[KPF]) -> Self {
         KPageFlagsIterator {
             reader,
             buf: [KPageFlags::empty(); 1 << (21 - 3)],
             nflags: 0,
             idx: 0,
+            ignored_flags: {
+                let mut mask = 0;
+
+                for f in ignored_flags.into_iter() {
+                    mask |= 1 << (*f as u64);
+                }
+
+                mask
+            },
         }
     }
 }
@@ -245,7 +256,9 @@ impl<B: BufRead> Iterator for KPageFlagsIterator<B> {
         }
 
         // Return the first valid flags.
-        let item = self.buf[self.idx];
+        let mut item = self.buf[self.idx];
+
+        item.clear(self.ignored_flags);
 
         self.nflags -= 1;
         self.idx += 1;
@@ -268,22 +281,12 @@ struct CombinedPageFlags {
 /// flags. This makes the stream a bit easier to plot and produce a markov process from.
 struct KPageFlagsProcessor<I: Iterator<Item = KPageFlags>> {
     flags: std::iter::Peekable<std::iter::Enumerate<I>>,
-    ignored_flags: u64,
 }
 
 impl<I: Iterator<Item = KPageFlags>> KPageFlagsProcessor<I> {
-    pub fn new(iter: I, ignored_flags: Vec<KPF>) -> Self {
+    pub fn new(iter: I) -> Self {
         Self {
             flags: iter.enumerate().peekable(),
-            ignored_flags: {
-                let mut mask = 0;
-
-                for f in ignored_flags.into_iter() {
-                    mask |= 1 << (f as u64);
-                }
-
-                mask
-            },
         }
     }
 }
@@ -294,13 +297,11 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
     fn next(&mut self) -> Option<Self::Item> {
         // Start with whatever the next flags are.
         let mut combined = {
-            let (start, mut flags) = if let Some((start, flags)) = self.flags.next() {
+            let (start, flags) = if let Some((start, flags)) = self.flags.next() {
                 (start as u64, flags)
             } else {
                 return None;
             };
-
-            flags.clear(self.ignored_flags);
 
             CombinedPageFlags {
                 start,
@@ -311,14 +312,10 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
 
         // Look ahead 1 element to see if we break the run...
         while let Some((_, next_flags)) = self.flags.peek() {
-            let mut next_flags = *next_flags;
-            next_flags.clear(self.ignored_flags);
-
             // If this element can be combined with `combined`, combine it.
-            if KPageFlags::can_combine(combined.flags, next_flags) {
-                let (pfn, mut flags) = self.flags.next().unwrap();
+            if KPageFlags::can_combine(combined.flags, *next_flags) {
+                let (pfn, flags) = self.flags.next().unwrap();
                 combined.end = pfn as u64 + 1; // exclusive
-                flags.clear(self.ignored_flags);
                 combined.flags |= flags;
             }
             // Otherwise, end the run and return here.
