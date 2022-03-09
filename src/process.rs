@@ -322,7 +322,7 @@ pub fn markov(args: &Args) -> io::Result<()> {
     for (fa, fb) in flags {
         *graph
             .entry(fa)
-            .or_insert_with(HashMap::new)
+            .or_insert_with(BTreeMap::new)
             .entry(fb)
             .or_insert(0) += 1;
 
@@ -335,7 +335,7 @@ pub fn markov(args: &Args) -> io::Result<()> {
     for sink in &innodes - &outnodes {
         *graph
             .entry(sink)
-            .or_insert_with(HashMap::new)
+            .or_insert_with(BTreeMap::new)
             .entry(sink)
             .or_insert(0) += 1;
     }
@@ -344,19 +344,38 @@ pub fn markov(args: &Args) -> io::Result<()> {
 
     // Compute edge probabilities and output graph.
     for (fa, out) in graph.iter() {
-        let total_out: u64 = out.iter().map(|(_fb, count)| count).sum();
+        let total_out = out.iter().map(|(_fb, count)| count).sum::<u64>() as f64;
 
         let order = fa.order;
         let flags = fa.flags;
         print!("{order} {flags:X}");
 
-        for (fb, count) in out.iter() {
+        // We need to make sure that the values add to 100. We do this by adding 1 to the rounded
+        // probabilities that are largest until we make up the rounding error.
+        let diff = 100
+            - out
+                .iter()
+                .map(|(_fb, count)| ((*count as f64 / total_out * 100.0) as usize).clamp(0, 100))
+                .sum::<usize>();
+        let remainders = {
+            let mut remainders = out
+                .iter()
+                .map(|(_fb, count)| (*count as f64 / total_out * 100.0).fract())
+                .enumerate()
+                .collect::<Vec<_>>();
+            remainders.sort_by_key(|(_, fract)| (fract * 1000.0) as u64);
+            remainders.truncate(diff);
+            remainders.into_iter().collect::<HashMap<_, _>>()
+        };
+
+        for (i, (fb, count)) in out.iter().enumerate() {
             let idx = graph
                 .keys()
                 .enumerate()
                 .find_map(|(i, f)| (*f == *fb).then(|| i))
                 .unwrap();
-            let prob = ((((*count as f64) / (total_out as f64)) * 100.0) as u64).clamp(0, 100);
+            let prob = ((*count as f64 / total_out * 100.0) as u64).clamp(0, 100)
+                + remainders.get(&i).map(|_| 1).unwrap_or(0);
             print!(" {idx} {prob}");
         }
 
