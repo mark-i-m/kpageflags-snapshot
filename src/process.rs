@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// The `MAX_ORDER` for Linux 5.17 (and a lot of older versions).
-const MAX_ORDER: u64 = 11;
+const MAX_ORDER: u64 = 10;
 
 #[derive(Copy, Clone, Debug)]
 pub struct CombinedPageFlags {
