@@ -1,6 +1,7 @@
 //! Reads /proc/kpageflags on Linux 5.17 to snapshot the usage of system memory.
 
 use std::{
+    fs, io,
     ops::{BitOr, BitOrAssign},
     path::PathBuf,
     str::FromStr,
@@ -8,6 +9,7 @@ use std::{
 
 use clap::Parser;
 use process::{map_and_summary, markov};
+use read::KPageFlagsReader;
 
 mod process;
 mod read;
@@ -100,6 +102,14 @@ impl KPF {
     pub fn values() -> impl Iterator<Item = u64> {
         ((KPF::Locked as u64)..(KPF::MAX1 as u64)).chain((KPF::Reserved as u64)..(KPF::MAX2 as u64))
     }
+
+    pub fn valid_mask() -> u64 {
+        let mut v = 0;
+        for b in Self::values() {
+            v |= 1 << b;
+        }
+        v
+    }
 }
 
 /// Represents the flags for a single physical page frame.
@@ -179,6 +189,11 @@ impl std::fmt::Display for KPageFlags {
             }
         }
 
+        let invalid_bits = self.0 & !KPF::valid_mask();
+        if invalid_bits != 0 {
+            write!(f, "INVALID BITS: {invalid_bits:X?}")?;
+        }
+
         Ok(())
     }
 }
@@ -195,13 +210,39 @@ pub struct Args {
     /// passed multiple times.
     #[clap(name = "FLAG", long = "ignore", multiple_occurrences(true))]
     ignored_flags: Vec<KPF>,
+
+    /// Decompress before processing.
+    #[clap(long)]
+    gzip: bool,
+
+    /// Print the Markov Process rather than the map and summary.
+    #[clap(long)]
+    markov: bool,
 }
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    map_and_summary(&args)?;
-    markov(&args)?;
+    let file = fs::File::open(&args.file)?;
+    let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
+
+    if args.gzip {
+        let reader = flate2::bufread::MultiGzDecoder::new(reader);
+        let reader = io::BufReader::with_capacity(1 << 21, reader);
+        let reader = KPageFlagsReader::new(reader);
+        if args.markov {
+            markov(reader, &args)?;
+        } else {
+            map_and_summary(reader, &args)?;
+        }
+    } else {
+        let reader = KPageFlagsReader::new(reader);
+        if args.markov {
+            markov(reader, &args)?;
+        } else {
+            map_and_summary(reader, &args)?;
+        }
+    }
 
     Ok(())
 }

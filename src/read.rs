@@ -1,40 +1,88 @@
 //! Abstractions for reading kpageflags and producing a stream of flags.
 
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, BufReader, Read};
 
 use crate::{KPageFlags, KPF, KPF_SIZE};
 
-/// Wrapper around a `BufRead` type that for the `/proc/kpageflags` file.
-pub struct KPageFlagsReader<B: BufRead> {
-    buf_reader: B,
+/// Wrapper around a `Read` type that for the `/proc/kpageflags` file.
+pub struct KPageFlagsReader<R: Read> {
+    reader: BufReader<R>,
 }
 
-impl<B: BufRead> KPageFlagsReader<B> {
-    pub fn new(buf_reader: B) -> Self {
-        KPageFlagsReader { buf_reader }
+impl<R: Read> KPageFlagsReader<R> {
+    pub fn new(reader: BufReader<R>) -> Self {
+        KPageFlagsReader { reader }
     }
 
     /// Similar to `Read::read`, but reads the bytes as `KPageFlags`, and returns the number of
     /// flags in the buffer, rather than the number of bytes.
-    pub fn read(&mut self, buf: &mut [KPageFlags]) -> io::Result<usize> {
+    pub fn read(&mut self, orig_buf: &mut [KPageFlags]) -> io::Result<usize> {
         // Cast as an array of bytes to do the read.
-        let buf: &mut [u8] = unsafe {
-            let ptr: *mut u8 = buf.as_mut_ptr() as *mut u8;
-            let len = buf.len() * KPF_SIZE;
+        let mut buf: &mut [u8] = unsafe {
+            let ptr: *mut u8 = orig_buf.as_mut_ptr() as *mut u8;
+            let len = orig_buf.len() * KPF_SIZE;
             std::slice::from_raw_parts_mut(ptr, len)
         };
 
-        self.buf_reader.read(buf).map(|bytes| {
-            assert_eq!(bytes % KPF_SIZE, 0);
-            bytes / KPF_SIZE
-        })
+        // Manually read from the buffer so that we can stop at a proper KPF boundary.
+        let mut total_bytes_read = 0;
+        let mut filled_buf = if self.reader.buffer().is_empty() {
+            self.reader.fill_buf()?
+        } else {
+            self.reader.buffer()
+        };
+
+        // Until we read enough...
+        loop {
+            match filled_buf.len() {
+                // Reached EOF
+                0 => break,
+
+                // Doesn't contain enough data for even one flag.
+                len if len < KPF_SIZE => {
+                    // Copy what we have...
+                    for i in 0..len {
+                        buf[i] = filled_buf[i];
+                    }
+
+                    // ... and refill.
+                    self.reader.consume(len);
+                    filled_buf = self.reader.fill_buf()?;
+                    buf = &mut buf[len..];
+                    total_bytes_read += len;
+                }
+
+                // Enough for at least one flag.
+                len => {
+                    // Figure out how many complete `KPageFlags` we have, and copy them to the `orig_buf`.
+                    let max_bytes_to_copy = std::cmp::min(len, buf.len());
+                    let complete_flags = max_bytes_to_copy / KPF_SIZE; // round (integer division)
+
+                    // We account for any partially read flags from previous iterations...
+                    let bytes_to_copy = complete_flags * KPF_SIZE - (total_bytes_read % KPF_SIZE);
+
+                    for i in 0..bytes_to_copy {
+                        buf[i] = filled_buf[i];
+                    }
+                    total_bytes_read += bytes_to_copy;
+
+                    // Tell the `BufReader` how much we consumed.
+                    self.reader.consume(bytes_to_copy);
+
+                    break;
+                }
+            }
+        }
+
+        assert_eq!(total_bytes_read % KPF_SIZE, 0);
+        Ok(total_bytes_read / KPF_SIZE)
     }
 }
 
 /// Turns a `KPageFlagsReader` into a proper (efficient) iterator over flags.
-pub struct KPageFlagsIterator<B: BufRead> {
+pub struct KPageFlagsIterator<R: Read> {
     /// The reader we are reading from.
-    reader: KPageFlagsReader<B>,
+    reader: KPageFlagsReader<R>,
 
     /// Temporary buffer for data read but not consumed yet.
     buf: [KPageFlags; 1 << (21 - 3)],
@@ -46,8 +94,8 @@ pub struct KPageFlagsIterator<B: BufRead> {
     ignored_flags: u64,
 }
 
-impl<B: BufRead> KPageFlagsIterator<B> {
-    pub fn new(reader: KPageFlagsReader<B>, ignored_flags: &[KPF]) -> Self {
+impl<R: Read> KPageFlagsIterator<R> {
+    pub fn new(reader: KPageFlagsReader<R>, ignored_flags: &[KPF]) -> Self {
         KPageFlagsIterator {
             reader,
             buf: [KPageFlags::empty(); 1 << (21 - 3)],
@@ -66,7 +114,7 @@ impl<B: BufRead> KPageFlagsIterator<B> {
     }
 }
 
-impl<B: BufRead> Iterator for KPageFlagsIterator<B> {
+impl<R: Read> Iterator for KPageFlagsIterator<R> {
     type Item = KPageFlags;
 
     fn next(&mut self) -> Option<Self::Item> {

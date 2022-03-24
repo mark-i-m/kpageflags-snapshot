@@ -3,9 +3,8 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
-    fs,
     hash::Hash,
-    io::{self, Write},
+    io::{self, Read, Write},
 };
 
 use crate::{
@@ -110,14 +109,8 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
     }
 }
 
-pub fn map_and_summary(args: &Args) -> io::Result<()> {
-    let file = fs::File::open(&args.file)?;
-    let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
-    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(
-        KPageFlagsReader::new(reader),
-        &args.ignored_flags,
-    ));
-
+pub fn map_and_summary<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io::Result<()> {
+    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, &args.ignored_flags));
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
@@ -282,36 +275,31 @@ fn log2(x: u64) -> u64 {
     }
 }
 
-pub fn markov(args: &Args) -> io::Result<()> {
-    let file = fs::File::open(&args.file)?;
-    let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
+pub fn markov<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io::Result<()> {
     let flags = PairIterator::new(
-        KPageFlagsProcessor::new(KPageFlagsIterator::new(
-            KPageFlagsReader::new(reader),
-            &args.ignored_flags,
-        ))
-        .filter(|combined| !combined.flags.has(KPF::Nopage))
-        .filter(|combined| !combined.flags.has(KPF::Reserved))
-        .map(|combined| CombinedGFPRegion {
-            order: log2((combined.end - combined.start).next_power_of_two()),
-            flags: if combined.flags.has(KPF::Slab) || combined.flags.has(KPF::Pgtable) {
-                GFP_KERNEL
-            } else if combined.flags.has(KPF::Mmap) {
-                GFP_USER
-            }
-            // Free pages...
-            else if combined.flags.has(KPF::Buddy) {
-                GFP_BUDDY
-            }
-            // And none of the above, but clearly not being used by user.
-            else if combined.flags.has(KPF::Lru) {
-                GFP_KERNEL
-            }
-            // No flags...
-            else {
-                GFP_KERNEL
-            },
-        }),
+        KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, &args.ignored_flags))
+            .filter(|combined| !combined.flags.has(KPF::Nopage))
+            .filter(|combined| !combined.flags.has(KPF::Reserved))
+            .map(|combined| CombinedGFPRegion {
+                order: log2((combined.end - combined.start).next_power_of_two()),
+                flags: if combined.flags.has(KPF::Slab) || combined.flags.has(KPF::Pgtable) {
+                    GFP_KERNEL
+                } else if combined.flags.has(KPF::Mmap) {
+                    GFP_USER
+                }
+                // Free pages...
+                else if combined.flags.has(KPF::Buddy) {
+                    GFP_BUDDY
+                }
+                // And none of the above, but clearly not being used by user.
+                else if combined.flags.has(KPF::Lru) {
+                    GFP_KERNEL
+                }
+                // No flags...
+                else {
+                    GFP_KERNEL
+                },
+            }),
     );
 
     // graph[a][b] = number of edges from a -> b in the graph.
