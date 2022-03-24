@@ -1,13 +1,15 @@
 //! Reads /proc/kpageflags on Linux 5.17 to snapshot the usage of system memory.
 
 use std::{
-    fs, io,
+    fs,
+    io::{self, BufRead, BufReader, Read},
     ops::{BitOr, BitOrAssign},
     path::PathBuf,
     str::FromStr,
 };
 
 use clap::Parser;
+use flate2::bufread::MultiGzDecoder;
 use process::{map_and_summary, markov};
 use read::KPageFlagsReader;
 
@@ -215,33 +217,56 @@ pub struct Args {
     #[clap(long)]
     gzip: bool,
 
-    /// Print the Markov Process rather than the map and summary.
+    /// List all page flags.
+    #[clap(long)]
+    flags: bool,
+
+    /// Print a summary of page usages.
+    #[clap(long)]
+    summary: bool,
+
+    /// Print the Markov Process.
     #[clap(long)]
     markov: bool,
+}
+
+enum Adapter<R, B> {
+    Zipped(MultiGzDecoder<B>),
+    Normal(R),
+}
+
+impl<R: Read, B: BufRead> Read for Adapter<R, B> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Adapter::Zipped(r) => r.read(buf),
+            Adapter::Normal(r) => r.read(buf),
+        }
+    }
+}
+
+fn open(args: &Args) -> std::io::Result<KPageFlagsReader<impl Read>> {
+    let file = fs::File::open(&args.file)?;
+
+    let reader = BufReader::with_capacity(1 << 21 /* 2MB */, file);
+    let reader = if args.gzip {
+        Adapter::Zipped(MultiGzDecoder::new(reader))
+    } else {
+        Adapter::Normal(reader)
+    };
+    let reader = BufReader::with_capacity(1 << 21, reader);
+    Ok(KPageFlagsReader::new(reader))
 }
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    let file = fs::File::open(&args.file)?;
-    let reader = io::BufReader::with_capacity(1 << 21 /* 2MB */, file);
-
-    if args.gzip {
-        let reader = flate2::bufread::MultiGzDecoder::new(reader);
-        let reader = io::BufReader::with_capacity(1 << 21, reader);
-        let reader = KPageFlagsReader::new(reader);
-        if args.markov {
-            markov(reader, &args)?;
-        } else {
-            map_and_summary(reader, &args)?;
-        }
-    } else {
-        let reader = KPageFlagsReader::new(reader);
-        if args.markov {
-            markov(reader, &args)?;
-        } else {
-            map_and_summary(reader, &args)?;
-        }
+    if args.flags || args.summary {
+        let reader = open(&args)?;
+        map_and_summary(reader, &args)?;
+    }
+    if args.markov {
+        let reader = open(&args)?;
+        markov(reader, &args)?;
     }
 
     Ok(())

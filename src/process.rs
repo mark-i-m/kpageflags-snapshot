@@ -115,42 +115,46 @@ pub fn map_and_summary<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io:
 
     // Iterate over contiguous physical memory regions with similar properties.
     for region in flags {
-        if region.end == region.start + 1 {
-            // The only reason we specify `size` here is so that `println` can handle the width of
-            // the field, so all the columns line up when we print...
-            println!(
-                "{:010X}            {:8}KB {}",
-                region.start, 4, region.flags
-            );
-        } else {
-            let size = (region.end - region.start) * 4;
-            println!(
-                "{:010X}-{:010X} {:8}KB {}",
-                region.start, region.end, size, region.flags,
-            );
+        if args.flags {
+            if region.end == region.start + 1 {
+                // The only reason we specify `size` here is so that `println` can handle the width of
+                // the field, so all the columns line up when we print...
+                println!(
+                    "{:010X}            {:8}KB {}",
+                    region.start, 4, region.flags
+                );
+            } else {
+                let size = (region.end - region.start) * 4;
+                println!(
+                    "{:010X}-{:010X} {:8}KB {}",
+                    region.start, region.end, size, region.flags,
+                );
+            }
         }
 
         *stats.entry(region.flags).or_insert(0) += region.end - region.start;
     }
 
     // Print some stats about the different types of page usage.
-    println!("SUMMARY");
-    let mut total = 0;
-    for (flags, npages) in stats.into_iter() {
-        let size = npages * 4;
-        if flags != KPageFlags::from(KPF::Nopage) {
-            total += size;
+    if args.summary {
+        println!("SUMMARY");
+        let mut total = 0;
+        for (flags, npages) in stats.into_iter() {
+            let size = npages * 4;
+            if flags != KPageFlags::from(KPF::Nopage) {
+                total += size;
+            }
+
+            let size = if size >= 1024 {
+                format!("{:6}MB", size >> 10)
+            } else {
+                format!("{size:6}KB")
+            };
+            println!("{size} {flags}");
         }
 
-        let size = if size >= 1024 {
-            format!("{:6}MB", size >> 10)
-        } else {
-            format!("{size:6}KB")
-        };
-        println!("{size} {flags}");
+        println!("TOTAL: {}MB", total >> 10);
     }
-
-    println!("TOTAL: {}MB", total >> 10);
 
     Ok(())
 }
@@ -327,8 +331,6 @@ pub fn markov<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io::Result<(
             .entry(sink)
             .or_insert(0) += 1;
     }
-
-    println!("MARKOV");
 
     // Compute edge probabilities and output graph.
     for (fa, out) in graph.iter() {
