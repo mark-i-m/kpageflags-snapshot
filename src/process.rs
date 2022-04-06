@@ -7,6 +7,8 @@ use std::{
     io::{self, Read, Write},
 };
 
+use hdrhistogram::Histogram;
+
 use crate::{
     read::{KPageFlagsIterator, KPageFlagsReader},
     Args, KPageFlags, KPF,
@@ -132,14 +134,19 @@ pub fn map_and_summary<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io:
             }
         }
 
-        *stats.entry(region.flags).or_insert(0) += region.end - region.start;
+        let (total, stats) = stats
+            .entry(region.flags)
+            .or_insert_with(|| (0, Histogram::<u64>::new(5).unwrap()));
+
+        *total += region.end - region.start;
+        stats.record(region.end - region.start).unwrap();
     }
 
     // Print some stats about the different types of page usage.
     if args.summary {
         println!("SUMMARY");
         let mut total = 0;
-        for (flags, npages) in stats.into_iter() {
+        for (flags, (npages, stats)) in stats.into_iter() {
             let size = npages * 4;
             if flags != KPageFlags::from(KPF::Nopage) {
                 total += size;
@@ -150,7 +157,14 @@ pub fn map_and_summary<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io:
             } else {
                 format!("{size:6}KB")
             };
-            println!("{size} {flags}");
+
+            let min = stats.min();
+            let p25 = stats.value_at_quantile(0.25);
+            let p50 = stats.value_at_quantile(0.50);
+            let p75 = stats.value_at_quantile(0.75);
+            let max = stats.max();
+
+            println!("{min} {p25} {p50} {p75} {max} {size} {flags}");
         }
 
         println!("TOTAL: {}MB", total >> 10);
