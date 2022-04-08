@@ -14,7 +14,7 @@ use flate2::bufread::MultiGzDecoder;
 use process::{map_and_summary, markov};
 use read::KPageFlagsReader;
 
-use crate::flags::{Flaggy, KPF4_15_0, KPF5_17_0};
+use crate::flags::*;
 
 mod flags;
 mod process;
@@ -223,11 +223,11 @@ fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     match args.kernel {
-        Kernel::V3_10_0 => todo!(),
+        Kernel::V3_10_0 => process::<KPF3_10_0>(&args),
         Kernel::V4_15_0 => process::<KPF4_15_0>(&args),
-        Kernel::V5_0_8 => todo!(),
-        Kernel::V5_4_0 => todo!(),
-        Kernel::V5_13_0 => todo!(),
+        Kernel::V5_0_8 => process::<KPF5_0_8>(&args),
+        Kernel::V5_4_0 => process::<KPF5_4_0>(&args),
+        Kernel::V5_13_0 => process::<KPF5_13_0>(&args),
         Kernel::V5_17_0 => process::<KPF5_17_0>(&args),
     }
 }

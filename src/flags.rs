@@ -95,6 +95,62 @@ macro_rules! kpf {
 /////////////////////////////////////////////////////////////////////////////////////////
 // Actual definitions of the different flags...
 
+// kpageflags for kernel 3.10.0
+kpf! {
+    pub enum KPF3_10_0 {
+        Locked = 0,
+        Error = 1,
+        Referenced = 2,
+        Uptodate = 3,
+        Dirty = 4,
+        Lru = 5,
+        Active = 6,
+        Slab = 7,
+        Writeback = 8,
+        Reclaim = 9,
+        Buddy = 10,
+        Mmap = 11,
+        Anon = 12,
+        Swapcache = 13,
+        Swapbacked = 14,
+        CompoundHead = 15,
+        CompoundTail = 16,
+        Huge = 17,
+        Unevictable = 18,
+        Hwpoison = 19,
+        Nopage = 20,
+        Ksm = 21,
+        Thp = 22,
+        Balloon = 23,
+        ZeroPage = 24,
+        Idle = 25,
+
+        Reserved = 32,
+        Mlocked = 33,
+        Mappedtodisk = 34,
+        Private = 35,
+        Private2 = 36,
+        OwnerPrivate = 37,
+        Arch = 38,
+        Uncached = 39,
+
+        Readahead = 48,
+        Slobfree = 49,
+        Slubfrozen = 50,
+        Slubdebug = 51,
+    }
+
+    NOPAGE: Self = KPF3_10_0::Nopage;
+    COMPOUND_HEAD: Self = KPF3_10_0::CompoundHead;
+    COMPOUND_TAIL: Self = KPF3_10_0::CompoundTail;
+    PGTABLE: Option<Self> = None;
+    BUDDY: Self = KPF3_10_0::Buddy;
+    SLAB: Self = KPF3_10_0::Slab;
+    RESERVED: Self = KPF3_10_0::Reserved;
+    MMAP: Self = KPF3_10_0::Mmap;
+    LRU: Self = KPF3_10_0::Lru;
+}
+
 // kpageflags for kernel 4.15.0
 kpf! {
     pub enum KPF4_15_0 {
@@ -139,6 +195,7 @@ kpf! {
         Slobfree = 49,
         Slubfrozen = 50,
         Slubdebug = 51,
+
         File = 61,
         Swap = 62,
         MmapExclusive = 63,
@@ -153,6 +210,193 @@ kpf! {
     RESERVED: Self = KPF4_15_0::Reserved;
     MMAP: Self = KPF4_15_0::Mmap;
     LRU: Self = KPF4_15_0::Lru;
+}
+
+// kpageflags for kernel 5.0.8
+kpf! {
+    pub enum KPF5_0_8 {
+        Locked = 0,
+        Error = 1,
+        Referenced = 2,
+        Uptodate = 3,
+        Dirty = 4,
+        Lru = 5,
+        Active = 6,
+        Slab = 7,
+        Writeback = 8,
+        Reclaim = 9,
+        Buddy = 10,
+        Mmap = 11,
+        Anon = 12,
+        Swapcache = 13,
+        Swapbacked = 14,
+        CompoundHead = 15,
+        CompoundTail = 16,
+        Huge = 17,
+        Unevictable = 18,
+        Hwpoison = 19,
+        Nopage = 20,
+        Ksm = 21,
+        Thp = 22,
+        Offline = 23,
+        ZeroPage = 24,
+        Idle = 25,
+        Pgtable = 26,
+
+        Reserved = 32,
+        Mlocked = 33,
+        Mappedtodisk = 34,
+        Private = 35,
+        Private2 = 36,
+        OwnerPrivate = 37,
+        Arch = 38,
+        Uncached = 39,
+        Softdirty = 40,
+
+        Readahead = 48,
+        Slobfree = 49,
+        Slubfrozen = 50,
+        Slubdebug = 51,
+
+        File = 61,
+        Swap = 62,
+        MmapExclusive = 63,
+    }
+
+    NOPAGE: Self = KPF5_0_8::Nopage;
+    COMPOUND_HEAD: Self = KPF5_0_8::CompoundHead;
+    COMPOUND_TAIL: Self = KPF5_0_8::CompoundTail;
+    PGTABLE: Option<Self> = Some(KPF5_0_8::Pgtable);
+    BUDDY: Self = KPF5_0_8::Buddy;
+    SLAB: Self = KPF5_0_8::Slab;
+    RESERVED: Self = KPF5_0_8::Reserved;
+    MMAP: Self = KPF5_0_8::Mmap;
+    LRU: Self = KPF5_0_8::Lru;
+}
+
+// kpageflags for kernel 5.4.0
+kpf! {
+    pub enum KPF5_4_0 {
+        Locked = 0,
+        Error = 1,
+        Referenced = 2,
+        Uptodate = 3,
+        Dirty = 4,
+        Lru = 5,
+        Active = 6,
+        Slab = 7,
+        Writeback = 8,
+        Reclaim = 9,
+        Buddy = 10,
+        Mmap = 11,
+        Anon = 12,
+        Swapcache = 13,
+        Swapbacked = 14,
+        CompoundHead = 15,
+        CompoundTail = 16,
+        Huge = 17,
+        Unevictable = 18,
+        Hwpoison = 19,
+        Nopage = 20,
+        Ksm = 21,
+        Thp = 22,
+        Offline = 23,
+        ZeroPage = 24,
+        Idle = 25,
+        Pgtable = 26,
+
+        Reserved = 32,
+        Mlocked = 33,
+        Mappedtodisk = 34,
+        Private = 35,
+        Private2 = 36,
+        OwnerPrivate = 37,
+        Arch = 38,
+        Uncached = 39,
+        Softdirty = 40,
+
+        Readahead = 48,
+        Slobfree = 49,
+        Slubfrozen = 50,
+        Slubdebug = 51,
+
+        File = 61,
+        Swap = 62,
+        MmapExclusive = 63,
+    }
+
+    NOPAGE: Self = KPF5_4_0::Nopage;
+    COMPOUND_HEAD: Self = KPF5_4_0::CompoundHead;
+    COMPOUND_TAIL: Self = KPF5_4_0::CompoundTail;
+    PGTABLE: Option<Self> = Some(KPF5_4_0::Pgtable);
+    BUDDY: Self = KPF5_4_0::Buddy;
+    SLAB: Self = KPF5_4_0::Slab;
+    RESERVED: Self = KPF5_4_0::Reserved;
+    MMAP: Self = KPF5_4_0::Mmap;
+    LRU: Self = KPF5_4_0::Lru;
+}
+
+// kpageflags for kernel 5.13.0
+kpf! {
+    pub enum KPF5_13_0 {
+        Locked = 0,
+        Error = 1,
+        Referenced = 2,
+        Uptodate = 3,
+        Dirty = 4,
+        Lru = 5,
+        Active = 6,
+        Slab = 7,
+        Writeback = 8,
+        Reclaim = 9,
+        Buddy = 10,
+        Mmap = 11,
+        Anon = 12,
+        Swapcache = 13,
+        Swapbacked = 14,
+        CompoundHead = 15,
+        CompoundTail = 16,
+        Huge = 17,
+        Unevictable = 18,
+        Hwpoison = 19,
+        Nopage = 20,
+        Ksm = 21,
+        Thp = 22,
+        Offline = 23,
+        ZeroPage = 24,
+        Idle = 25,
+        Pgtable = 26,
+
+        Reserved = 32,
+        Mlocked = 33,
+        Mappedtodisk = 34,
+        Private = 35,
+        Private2 = 36,
+        OwnerPrivate = 37,
+        Arch = 38,
+        Uncached = 39,
+        Softdirty = 40,
+        Arch2 = 41,
+
+        Readahead = 48,
+        Slobfree = 49,
+        Slubfrozen = 50,
+        Slubdebug = 51,
+
+        File = 61,
+        Swap = 62,
+        MmapExclusive = 63,
+    }
+
+    NOPAGE: Self = KPF5_13_0::Nopage;
+    COMPOUND_HEAD: Self = KPF5_13_0::CompoundHead;
+    COMPOUND_TAIL: Self = KPF5_13_0::CompoundTail;
+    PGTABLE: Option<Self> = Some(KPF5_13_0::Pgtable);
+    BUDDY: Self = KPF5_13_0::Buddy;
+    SLAB: Self = KPF5_13_0::Slab;
+    RESERVED: Self = KPF5_13_0::Reserved;
+    MMAP: Self = KPF5_13_0::Mmap;
+    LRU: Self = KPF5_13_0::Lru;
 }
 
 // kpageflags for kernel 5.17.0
@@ -201,6 +445,7 @@ kpf! {
         Slobfree = 49,
         Slubfrozen = 50,
         Slubdebug = 51,
+
         File = 61,
         Swap = 62,
         MmapExclusive = 63,
