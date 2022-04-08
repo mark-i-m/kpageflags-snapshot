@@ -14,7 +14,7 @@ use flate2::bufread::MultiGzDecoder;
 use process::{map_and_summary, markov};
 use read::KPageFlagsReader;
 
-use crate::flags::{Flaggy, KPF5_17_0};
+use crate::flags::{Flaggy, KPF4_15_0, KPF5_17_0};
 
 mod flags;
 mod process;
@@ -183,28 +183,6 @@ impl<R: Read, B: BufRead> Read for Adapter<R, B> {
     }
 }
 
-fn parse_ignored_flags(args: &Args) -> Vec<impl Flaggy> {
-    fn inner<K>(args: &Args) -> Vec<K>
-    where
-        K: Flaggy,
-        <K as FromStr>::Err: std::fmt::Debug,
-    {
-        args.ignored_flags
-            .iter()
-            .map(|s| K::from_str(s).unwrap())
-            .collect()
-    }
-
-    match args.kernel {
-        Kernel::V3_10_0 => todo!(),
-        Kernel::V4_15_0 => todo!(),
-        Kernel::V5_0_8 => todo!(),
-        Kernel::V5_4_0 => todo!(),
-        Kernel::V5_13_0 => todo!(),
-        Kernel::V5_17_0 => inner::<KPF5_17_0>(args),
-    }
-}
-
 fn open<K: Flaggy>(args: &Args) -> std::io::Result<KPageFlagsReader<impl Read, K>> {
     let file = fs::File::open(&args.file)?;
 
@@ -218,9 +196,16 @@ fn open<K: Flaggy>(args: &Args) -> std::io::Result<KPageFlagsReader<impl Read, K
     Ok(KPageFlagsReader::new(reader))
 }
 
-fn main() -> std::io::Result<()> {
-    let args = Args::parse();
-    let ignored_flags = parse_ignored_flags(&args);
+fn process<K>(args: &Args) -> std::io::Result<()>
+where
+    K: Flaggy,
+    <K as FromStr>::Err: std::fmt::Debug,
+{
+    let ignored_flags: Vec<K> = args
+        .ignored_flags
+        .iter()
+        .map(|s| K::from_str(s).unwrap())
+        .collect();
 
     if args.flags || args.summary {
         let reader = open(&args)?;
@@ -232,4 +217,17 @@ fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+fn main() -> std::io::Result<()> {
+    let args = Args::parse();
+
+    match args.kernel {
+        Kernel::V3_10_0 => todo!(),
+        Kernel::V4_15_0 => process::<KPF4_15_0>(&args),
+        Kernel::V5_0_8 => todo!(),
+        Kernel::V5_4_0 => todo!(),
+        Kernel::V5_13_0 => todo!(),
+        Kernel::V5_17_0 => process::<KPF5_17_0>(&args),
+    }
 }
