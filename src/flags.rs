@@ -10,7 +10,7 @@ pub trait Flaggy:
     const NOPAGE: Self;
     const COMPOUND_HEAD: Self;
     const COMPOUND_TAIL: Self;
-    const PGTABLE: Self;
+    const PGTABLE: Option<Self>;
     const BUDDY: Self;
     const SLAB: Self;
     const RESERVED: Self;
@@ -29,9 +29,9 @@ pub trait Flaggy:
     }
 }
 
-/// Easier to derive FromStr...
+/// Easier to derive `Flaggy` and a bunch of other stuff...
 macro_rules! kpf {
-    (pub enum $kpfname:ident { $($name:ident = $val:literal),+ $(,)? } $($c:ident: $v:ident;)+) => {
+    (pub enum $kpfname:ident { $($name:ident = $val:literal),+ $(,)? } $($c:ident: $t:ty = $v:expr;)+) => {
         // It's not actually dead code... the `KPF::from` function allows constructing all of them...
         #[allow(dead_code)]
         #[derive(Copy, Clone, Debug, Hash, PartialEq, PartialOrd, Eq, Ord)]
@@ -63,7 +63,7 @@ macro_rules! kpf {
         }
 
         impl Flaggy for $kpfname {
-            $(const $c: Self = $kpfname::$v;)+
+            $(const $c: $t = $v;)+
 
             fn valid(val: u64) -> bool {
                 match val {
@@ -92,55 +92,127 @@ macro_rules! kpf {
     };
 }
 
-kpf! {
-pub enum KPF5_17_0 {
-    Locked = 0,
-    Error = 1,
-    Referenced = 2,
-    Uptodate = 3,
-    Dirty = 4,
-    Lru = 5,
-    Active = 6,
-    Slab = 7,
-    Writeback = 8,
-    Reclaim = 9,
-    Buddy = 10,
-    Mmap = 11,
-    Anon = 12,
-    Swapcache = 13,
-    Swapbacked = 14,
-    CompoundHead = 15,
-    CompoundTail = 16,
-    Huge = 17,
-    Unevictable = 18,
-    Hwpoison = 19,
-    Nopage = 20,
-    Ksm = 21,
-    Thp = 22,
-    Offline = 23,
-    ZeroPage = 24,
-    Idle = 25,
-    Pgtable = 26,
+/////////////////////////////////////////////////////////////////////////////////////////
+// Actual definitions of the different flags...
 
-    Reserved = 32,
-    Mlocked = 33,
-    Mappedtodisk = 34,
-    Private = 35,
-    Private2 = 36,
-    OwnerPrivate = 37,
-    Arch = 38,
-    Uncached = 39,
-    Softdirty = 40,
-    Arch2 = 41,
+// kpageflags for kernel 4.15.0
+kpf! {
+    pub enum KPF4_15_0 {
+        Locked = 0,
+        Error = 1,
+        Referenced = 2,
+        Uptodate = 3,
+        Dirty = 4,
+        Lru = 5,
+        Active = 6,
+        Slab = 7,
+        Writeback = 8,
+        Reclaim = 9,
+        Buddy = 10,
+        Mmap = 11,
+        Anon = 12,
+        Swapcache = 13,
+        Swapbacked = 14,
+        CompoundHead = 15,
+        CompoundTail = 16,
+        Huge = 17,
+        Unevictable = 18,
+        Hwpoison = 19,
+        Nopage = 20,
+        Ksm = 21,
+        Thp = 22,
+        Balloon = 23,
+        ZeroPage = 24,
+        Idle = 25,
+
+        Reserved = 32,
+        Mlocked = 33,
+        Mappedtodisk = 34,
+        Private = 35,
+        Private2 = 36,
+        OwnerPrivate = 37,
+        Arch = 38,
+        Uncached = 39,
+        Softdirty = 40,
+
+        Readahead = 48,
+        Slobfree = 49,
+        Slubfrozen = 50,
+        Slubdebug = 51,
+        File = 61,
+        Swap = 62,
+        MmapExclusive = 63,
+    }
+
+    NOPAGE: Self = KPF4_15_0::Nopage;
+    COMPOUND_HEAD: Self = KPF4_15_0::CompoundHead;
+    COMPOUND_TAIL: Self = KPF4_15_0::CompoundTail;
+    PGTABLE: Option<Self> = None;
+    BUDDY: Self = KPF4_15_0::Buddy;
+    SLAB: Self = KPF4_15_0::Slab;
+    RESERVED: Self = KPF4_15_0::Reserved;
+    MMAP: Self = KPF4_15_0::Mmap;
+    LRU: Self = KPF4_15_0::Lru;
 }
 
-NOPAGE: Nopage;
-COMPOUND_HEAD: CompoundHead;
-COMPOUND_TAIL: CompoundTail;
-PGTABLE: Pgtable;
-BUDDY: Buddy;
-SLAB: Slab;
-RESERVED: Reserved;
-MMAP: Mmap;
-LRU: Lru;
+// kpageflags for kernel 5.17.0
+kpf! {
+    pub enum KPF5_17_0 {
+        Locked = 0,
+        Error = 1,
+        Referenced = 2,
+        Uptodate = 3,
+        Dirty = 4,
+        Lru = 5,
+        Active = 6,
+        Slab = 7,
+        Writeback = 8,
+        Reclaim = 9,
+        Buddy = 10,
+        Mmap = 11,
+        Anon = 12,
+        Swapcache = 13,
+        Swapbacked = 14,
+        CompoundHead = 15,
+        CompoundTail = 16,
+        Huge = 17,
+        Unevictable = 18,
+        Hwpoison = 19,
+        Nopage = 20,
+        Ksm = 21,
+        Thp = 22,
+        Offline = 23,
+        ZeroPage = 24,
+        Idle = 25,
+        Pgtable = 26,
+
+        Reserved = 32,
+        Mlocked = 33,
+        Mappedtodisk = 34,
+        Private = 35,
+        Private2 = 36,
+        OwnerPrivate = 37,
+        Arch = 38,
+        Uncached = 39,
+        Softdirty = 40,
+        Arch2 = 41,
+
+        Readahead = 48,
+        Slobfree = 49,
+        Slubfrozen = 50,
+        Slubdebug = 51,
+        File = 61,
+        Swap = 62,
+        MmapExclusive = 63,
+    }
+
+    NOPAGE: Self = KPF5_17_0::Nopage;
+    COMPOUND_HEAD: Self = KPF5_17_0::CompoundHead;
+    COMPOUND_TAIL: Self = KPF5_17_0::CompoundTail;
+    PGTABLE: Option<Self> = Some(KPF5_17_0::Pgtable);
+    BUDDY: Self = KPF5_17_0::Buddy;
+    SLAB: Self = KPF5_17_0::Slab;
+    RESERVED: Self = KPF5_17_0::Reserved;
+    MMAP: Self = KPF5_17_0::Mmap;
+    LRU: Self = KPF5_17_0::Lru;
 }

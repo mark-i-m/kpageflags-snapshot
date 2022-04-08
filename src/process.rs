@@ -308,7 +308,9 @@ pub fn markov<R: Read, K: Flaggy>(
             .filter(|combined| !combined.flags.has(K::RESERVED))
             .map(|combined| CombinedGFPRegion {
                 order: log2((combined.end - combined.start).next_power_of_two()),
-                flags: if combined.flags.has(K::SLAB) || combined.flags.has(K::PGTABLE) {
+                flags: if combined.flags.has(K::SLAB) {
+                    GFP_KERNEL
+                } else if K::PGTABLE.is_some() && combined.flags.has(K::PGTABLE.unwrap()) {
                     GFP_KERNEL
                 } else if combined.flags.has(K::MMAP) {
                     GFP_USER
