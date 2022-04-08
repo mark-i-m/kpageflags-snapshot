@@ -10,25 +10,26 @@ use std::{
 use hdrhistogram::Histogram;
 
 use crate::{
+    flags::Flaggy,
     read::{KPageFlagsIterator, KPageFlagsReader},
-    Args, KPageFlags, KPF,
+    Args, KPageFlags,
 };
 
 /// The `MAX_ORDER` for Linux 5.17 (and a lot of older versions).
 const MAX_ORDER: u64 = 10;
 
 #[derive(Copy, Clone, Debug)]
-pub struct CombinedPageFlags {
+pub struct CombinedPageFlags<K: Flaggy> {
     /// Starting PFN (inclusive).
     pub start: u64,
     /// Ending PFN (exlusive).
     pub end: u64,
 
     /// Flags of the indicated region.
-    pub flags: KPageFlags,
+    pub flags: KPageFlags<K>,
 }
 
-impl Ord for CombinedPageFlags {
+impl<K: Flaggy> Ord for CombinedPageFlags<K> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let combinedself = (self.end - self.start) ^ self.flags.as_u64();
         let combinedother = (other.end - other.start) ^ other.flags.as_u64();
@@ -36,20 +37,20 @@ impl Ord for CombinedPageFlags {
         Ord::cmp(&combinedself, &combinedother)
     }
 }
-impl PartialOrd for CombinedPageFlags {
+impl<K: Flaggy> PartialOrd for CombinedPageFlags<K> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(Self::cmp(self, other))
     }
 }
 
-impl PartialEq for CombinedPageFlags {
+impl<K: Flaggy> PartialEq for CombinedPageFlags<K> {
     fn eq(&self, other: &Self) -> bool {
         matches!(Self::cmp(self, other), Ordering::Equal)
     }
 }
-impl Eq for CombinedPageFlags {}
+impl<K: Flaggy> Eq for CombinedPageFlags<K> {}
 
-impl Hash for CombinedPageFlags {
+impl<K: Flaggy> Hash for CombinedPageFlags<K> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Hash size and flags.
         (self.end - self.start).hash(state);
@@ -59,11 +60,11 @@ impl Hash for CombinedPageFlags {
 
 /// Consumes an iterator over flags and transforms it to combine various elements and simplify
 /// flags. This makes the stream a bit easier to plot and produce a markov process from.
-pub struct KPageFlagsProcessor<I: Iterator<Item = KPageFlags>> {
+pub struct KPageFlagsProcessor<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> {
     flags: std::iter::Peekable<std::iter::Enumerate<I>>,
 }
 
-impl<I: Iterator<Item = KPageFlags>> KPageFlagsProcessor<I> {
+impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> KPageFlagsProcessor<K, I> {
     pub fn new(iter: I) -> Self {
         Self {
             flags: iter.enumerate().peekable(),
@@ -71,8 +72,8 @@ impl<I: Iterator<Item = KPageFlags>> KPageFlagsProcessor<I> {
     }
 }
 
-impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
-    type Item = CombinedPageFlags;
+impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsProcessor<K, I> {
+    type Item = CombinedPageFlags<K>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Start with whatever the next flags are.
@@ -111,8 +112,12 @@ impl<I: Iterator<Item = KPageFlags>> Iterator for KPageFlagsProcessor<I> {
     }
 }
 
-pub fn map_and_summary<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io::Result<()> {
-    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, &args.ignored_flags));
+pub fn map_and_summary<R: Read, K: Flaggy>(
+    reader: KPageFlagsReader<R, K>,
+    ignored_flags: &[K],
+    args: &Args,
+) -> io::Result<()> {
+    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, ignored_flags));
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
@@ -148,7 +153,7 @@ pub fn map_and_summary<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io:
         let mut total = 0;
         for (flags, (npages, stats)) in stats.into_iter() {
             let size = npages * 4;
-            if flags != KPageFlags::from(KPF::Nopage) {
+            if flags != KPageFlags::from(K::NOPAGE) {
                 total += size;
             }
 
@@ -293,24 +298,27 @@ fn log2(x: u64) -> u64 {
     }
 }
 
-pub fn markov<R: Read>(reader: KPageFlagsReader<R>, args: &Args) -> io::Result<()> {
+pub fn markov<R: Read, K: Flaggy>(
+    reader: KPageFlagsReader<R, K>,
+    ignored_flags: &[K],
+) -> io::Result<()> {
     let flags = PairIterator::new(
-        KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, &args.ignored_flags))
-            .filter(|combined| !combined.flags.has(KPF::Nopage))
-            .filter(|combined| !combined.flags.has(KPF::Reserved))
+        KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, ignored_flags))
+            .filter(|combined| !combined.flags.has(K::NOPAGE))
+            .filter(|combined| !combined.flags.has(K::RESERVED))
             .map(|combined| CombinedGFPRegion {
                 order: log2((combined.end - combined.start).next_power_of_two()),
-                flags: if combined.flags.has(KPF::Slab) || combined.flags.has(KPF::Pgtable) {
+                flags: if combined.flags.has(K::SLAB) || combined.flags.has(K::PGTABLE) {
                     GFP_KERNEL
-                } else if combined.flags.has(KPF::Mmap) {
+                } else if combined.flags.has(K::MMAP) {
                     GFP_USER
                 }
                 // Free pages...
-                else if combined.flags.has(KPF::Buddy) {
+                else if combined.flags.has(K::BUDDY) {
                     GFP_BUDDY
                 }
                 // And none of the above, but clearly not being used by user.
-                else if combined.flags.has(KPF::Lru) {
+                else if combined.flags.has(K::LRU) {
                     GFP_KERNEL
                 }
                 // No flags...

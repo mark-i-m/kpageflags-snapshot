@@ -1,22 +1,29 @@
 //! Abstractions for reading kpageflags and producing a stream of flags.
 
-use std::io::{self, BufRead, BufReader, Read};
+use std::{
+    io::{self, BufRead, BufReader, Read},
+    marker::PhantomData,
+};
 
-use crate::{KPageFlags, KPF, KPF_SIZE};
+use crate::{flags::Flaggy, KPageFlags, KPF_SIZE};
 
 /// Wrapper around a `Read` type that for the `/proc/kpageflags` file.
-pub struct KPageFlagsReader<R: Read> {
+pub struct KPageFlagsReader<R: Read, K: Flaggy> {
     reader: BufReader<R>,
+    _phantom: PhantomData<K>,
 }
 
-impl<R: Read> KPageFlagsReader<R> {
+impl<R: Read, K: Flaggy> KPageFlagsReader<R, K> {
     pub fn new(reader: BufReader<R>) -> Self {
-        KPageFlagsReader { reader }
+        KPageFlagsReader {
+            reader,
+            _phantom: PhantomData,
+        }
     }
 
     /// Similar to `Read::read`, but reads the bytes as `KPageFlags`, and returns the number of
     /// flags in the buffer, rather than the number of bytes.
-    pub fn read(&mut self, orig_buf: &mut [KPageFlags]) -> io::Result<usize> {
+    pub fn read(&mut self, orig_buf: &mut [KPageFlags<K>]) -> io::Result<usize> {
         // Cast as an array of bytes to do the read.
         let mut buf: &mut [u8] = unsafe {
             let ptr: *mut u8 = orig_buf.as_mut_ptr() as *mut u8;
@@ -80,12 +87,12 @@ impl<R: Read> KPageFlagsReader<R> {
 }
 
 /// Turns a `KPageFlagsReader` into a proper (efficient) iterator over flags.
-pub struct KPageFlagsIterator<R: Read> {
+pub struct KPageFlagsIterator<R: Read, K: Flaggy> {
     /// The reader we are reading from.
-    reader: KPageFlagsReader<R>,
+    reader: KPageFlagsReader<R, K>,
 
     /// Temporary buffer for data read but not consumed yet.
-    buf: [KPageFlags; 1 << (21 - 3)],
+    buf: [KPageFlags<K>; 1 << (21 - 3)],
     /// The number of valid flags in the buffer.
     nflags: usize,
     /// The index of the first valid, unconsumed flag in the buffer, if `nflags > 0`.
@@ -94,18 +101,18 @@ pub struct KPageFlagsIterator<R: Read> {
     ignored_flags: u64,
 }
 
-impl<R: Read> KPageFlagsIterator<R> {
-    pub fn new(reader: KPageFlagsReader<R>, ignored_flags: &[KPF]) -> Self {
+impl<R: Read, K: Flaggy> KPageFlagsIterator<R, K> {
+    pub fn new(reader: KPageFlagsReader<R, K>, ignored_flags: &[K]) -> Self {
         KPageFlagsIterator {
             reader,
             buf: [KPageFlags::empty(); 1 << (21 - 3)],
             nflags: 0,
             idx: 0,
             ignored_flags: {
-                let mut mask = 0;
+                let mut mask: u64 = 0;
 
                 for f in ignored_flags.into_iter() {
-                    mask |= 1 << (*f as u64);
+                    mask |= 1 << (*f).into();
                 }
 
                 mask
@@ -114,8 +121,8 @@ impl<R: Read> KPageFlagsIterator<R> {
     }
 }
 
-impl<R: Read> Iterator for KPageFlagsIterator<R> {
-    type Item = KPageFlags;
+impl<R: Read, K: Flaggy> Iterator for KPageFlagsIterator<R, K> {
+    type Item = KPageFlags<K>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Need to read some more?
