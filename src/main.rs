@@ -149,6 +149,7 @@ enum Kernel {
     V5_0_8,
     V5_4_0,
     V5_13_0,
+    V5_15_0,
     V5_17_0,
 }
 
@@ -162,6 +163,7 @@ impl FromStr for Kernel {
             "5.0.8" => Ok(Kernel::V5_0_8),
             "5.4.0" => Ok(Kernel::V5_4_0),
             "5.13.0" => Ok(Kernel::V5_13_0),
+            "5.15.0" => Ok(Kernel::V5_15_0),
             "5.17.0" => Ok(Kernel::V5_17_0),
 
             other => Err(format!("Unknown kernel version: {other}")),
@@ -228,6 +230,7 @@ fn main() -> std::io::Result<()> {
         Kernel::V5_0_8 => process::<KPF5_0_8>(&args),
         Kernel::V5_4_0 => process::<KPF5_4_0>(&args),
         Kernel::V5_13_0 => process::<KPF5_13_0>(&args),
+        Kernel::V5_15_0 => process::<KPF5_15_0>(&args),
         Kernel::V5_17_0 => process::<KPF5_17_0>(&args),
     }
 }
