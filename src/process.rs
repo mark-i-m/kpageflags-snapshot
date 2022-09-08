@@ -247,9 +247,12 @@ where
     }
 }
 
-const GFP_KERNEL: u64 = 1 << 0;
-const GFP_USER: u64 = 1 << 1;
-const GFP_BUDDY: u64 = 1 << 2;
+const FLAGS_BUDDY: u64 = 1 << 0;
+const FLAGS_FILE: u64 = 1 << 1;
+const FLAGS_ANON: u64 = 1 << 2;
+const FLAGS_ANON_THP: u64 = 1 << 3;
+const FLAGS_NONE: u64 = 1 << 4;
+const FLAGS_PINNED: u64 = 1 << 5;
 
 #[derive(Copy, Clone, Debug)]
 struct CombinedGFPRegion {
@@ -331,24 +334,31 @@ pub fn markov<R: Read, K: Flaggy>(
             .filter(|combined| !combined.flags.has(K::RESERVED))
             .map(|combined| CombinedGFPRegion {
                 order: log2((combined.end - combined.start).next_power_of_two()),
-                flags: if combined.flags.has(K::SLAB) {
-                    GFP_KERNEL
+                flags:
+                    // Kernel memory.
+                    if combined.flags.has(K::SLAB) {
+                    FLAGS_PINNED
                 } else if K::PGTABLE.is_some() && combined.flags.has(K::PGTABLE.unwrap()) {
-                    GFP_KERNEL
-                } else if combined.flags.has(K::MMAP) {
-                    GFP_USER
+                    FLAGS_PINNED
                 }
-                // Free pages...
+                // Free pages.
                 else if combined.flags.has(K::BUDDY) {
-                    GFP_BUDDY
+                    FLAGS_BUDDY
                 }
-                // And none of the above, but clearly not being used by user.
+                // Anonymous memory.
+                else if combined.flags.has(K::ANON) && combined.flags.has(K::THP) {
+                    FLAGS_ANON_THP
+                }
+                else if combined.flags.has(K::ANON) {
+                    FLAGS_ANON
+                }
+                // File cache.
                 else if combined.flags.has(K::LRU) {
-                    GFP_KERNEL
+                    FLAGS_FILE
                 }
-                // No flags...
+                // No flags... VM balloon drivers, IO buffers, etc.
                 else {
-                    GFP_KERNEL
+                    FLAGS_NONE
                 },
             }),
     );
