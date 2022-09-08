@@ -7,13 +7,10 @@ use std::{
     io::{self, Read, Write},
 };
 
+use encyclopagia::kpageflags::{Flaggy, KPageFlags, KPageFlagsReader, KPageFlagsIterator};
 use hdrhistogram::Histogram;
 
-use crate::{
-    flags::Flaggy,
-    read::{KPageFlagsIterator, KPageFlagsReader},
-    Args, KPageFlags,
-};
+use crate::Args;
 
 /// The `MAX_ORDER` for Linux 5.17 (and a lot of older versions).
 const MAX_ORDER: u64 = 10;
