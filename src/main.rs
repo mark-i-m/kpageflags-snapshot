@@ -46,9 +46,24 @@ pub struct Args {
     #[clap(long)]
     summary: bool,
 
+    /// Print the distribution of contiguity for each set of flags. This is the number of pages in
+    /// each order of that type (similar to `/proc/buddyinfo`).
+    #[clap(long)]
+    dist: bool,
+
     /// Print the Markov Process.
     #[clap(long)]
     markov: bool,
+
+    /// Compare the following snapshots in the given order (pass this flag multiple times) to see
+    /// the change of in memory usage over time on a page by page basis.
+    #[clap(
+        long,
+        required = false,
+        multiple_occurrences = false,
+        multiple_values = true
+    )]
+    compare: Vec<PathBuf>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -94,11 +109,14 @@ impl<R: Read, B: BufRead> Read for Adapter<R, B> {
     }
 }
 
-fn open<K: Flaggy>(args: &Args) -> std::io::Result<KPageFlagsReader<impl Read, K>> {
-    let file = fs::File::open(&args.file)?;
+fn open<K: Flaggy>(
+    gzip: bool,
+    file: impl AsRef<Path>,
+) -> std::io::Result<KPageFlagsReader<impl Read, K>> {
+    let file = fs::File::open(&file)?;
 
     let reader = BufReader::with_capacity(1 << 21 /* 2MB */, file);
-    let reader = if args.gzip {
+    let reader = if gzip {
         Adapter::Zipped(MultiGzDecoder::new(reader))
     } else {
         Adapter::Normal(reader)
@@ -119,12 +137,20 @@ where
         .collect();
 
     if args.flags || args.summary {
-        let reader = open(&args)?;
+        let reader = open(args.gzip, &args.file)?;
         map_and_summary(reader, &ignored_flags, &args)?;
     }
     if args.markov {
-        let reader = open(&args)?;
+        let reader = open(args.gzip, &args.file)?;
         markov(reader, &ignored_flags)?;
+    }
+    if args.dist {
+        let reader = open(args.gzip, &args.file)?;
+        type_dists(reader, &ignored_flags)?;
+    }
+
+    if args.compare.len() > 0 {
+        compare_snapshots::<K>(&ignored_flags, &args)?;
     }
 
     Ok(())

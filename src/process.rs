@@ -7,7 +7,7 @@ use std::{
     io::{self, Read, Write},
 };
 
-use encyclopagia::kpageflags::{Flaggy, KPageFlags, KPageFlagsReader, KPageFlagsIterator};
+use encyclopagia::kpageflags::{Flaggy, KPageFlags, KPageFlagsIterator, KPageFlagsReader};
 use hdrhistogram::Histogram;
 
 use crate::Args;
@@ -106,6 +106,32 @@ impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsProces
         }
 
         Some(combined)
+    }
+}
+
+/// Consumes a collection of iterators over flags in lockstep. In each call to `next`, it calls
+/// `next` on each of the sub-iterators and returns an array with the returned values.
+pub struct KPageFlagsLockstep<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> {
+    iters: Vec<I>,
+}
+
+impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> KPageFlagsLockstep<K, I> {
+    pub fn new(iters: Vec<I>) -> Self {
+        KPageFlagsLockstep { iters }
+    }
+}
+
+impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsLockstep<K, I> {
+    type Item = Vec<Option<I::Item>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let out: Vec<Option<I::Item>> = self.iters.iter_mut().map(|i| i.next()).collect();
+
+        if out.iter().all(Option::is_none) {
+            None
+        } else {
+            Some(out)
+        }
     }
 }
 
@@ -393,6 +419,60 @@ pub fn markov<R: Read, K: Flaggy>(
         print!(";");
 
         io::stdout().flush()?;
+    }
+
+    Ok(())
+}
+
+pub fn type_dists<R: Read, K: Flaggy>(
+    reader: KPageFlagsReader<R, K>,
+    ignored_flags: &[K],
+) -> io::Result<()> {
+    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, ignored_flags));
+    let mut stats = BTreeMap::new();
+
+    // Iterate over contiguous physical memory regions with similar properties.
+    for region in flags {
+        let orders = stats
+            .entry(region.flags)
+            .or_insert_with(|| [0; MAX_ORDER as usize + 1]);
+        let order = log2((region.end - region.start).next_power_of_two()) as usize;
+        orders[order] += 1;
+    }
+
+    // Print some stats about the different types of page usage.
+    for (flags, orders) in stats.into_iter() {
+        for o in 0..orders.len() {
+            print!("{} ", orders[o] << o);
+        }
+        println!("{flags}");
+    }
+
+    Ok(())
+}
+
+pub fn compare_snapshots<K: Flaggy>(ignored_flags: &[K], args: &Args) -> io::Result<()> {
+    let snapshot_iterators = KPageFlagsLockstep::new(
+        args.compare
+            .iter()
+            .map(|fname| {
+                let reader: KPageFlagsReader<_, K> = super::open(args.gzip, fname).unwrap();
+                KPageFlagsIterator::new(reader, ignored_flags)
+            })
+            .collect(),
+    );
+
+    for set_of_flags in snapshot_iterators {
+        let mut changes = 0;
+        let mut prev = set_of_flags[0];
+        for flags in set_of_flags.iter().skip(1) {
+            if *flags != prev {
+                changes += 1;
+            }
+            prev = *flags;
+        }
+
+        println!("{changes}");
     }
 
     Ok(())
