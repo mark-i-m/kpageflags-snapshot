@@ -120,7 +120,7 @@ dependencies = [
 [[package]]
 name = "encyclopagia"
 version = "0.1.0"
-source = "git+https://github.com/mark-i-m/encyclopagia?branch=main#05eab983582711d963a480224ffb588cbc4f31df"
+source = "git+https://github.com/mark-i-m/encyclopagia?branch=main#bccb815f4751329ff5b13e0373819ecff9c5b5c1"
 
 [[package]]
 name = "flate2"
