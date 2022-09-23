@@ -9,6 +9,7 @@ use std::{
 
 use encyclopagia::kpageflags::{Flaggy, KPageFlags, KPageFlagsIterator, KPageFlagsReader};
 use hdrhistogram::Histogram;
+use nalgebra::DMatrix;
 
 use crate::Args;
 
@@ -389,8 +390,10 @@ pub fn markov<R: Read, K: Flaggy>(
             .or_insert(0) += 1;
     }
 
-    // Compute edge probabilities and output graph.
-    for (fa, out) in graph.iter() {
+    // Compute edge probabilities and output graph. Also construct probability transition matrix
+    // `p` so that we can compute the stationary distribution later.
+    let mut p = DMatrix::repeat(graph.len(), graph.len(), 0.0);
+    for (i, (fa, out)) in graph.iter().enumerate() {
         let total_out = out.iter().map(|(_fb, count)| count).sum::<u64>() as f64;
 
         let order = fa.order;
@@ -415,21 +418,31 @@ pub fn markov<R: Read, K: Flaggy>(
             remainders.into_iter().collect::<HashMap<_, _>>()
         };
 
-        for (i, (fb, count)) in out.iter().enumerate() {
+        for (j, (fb, count)) in out.iter().enumerate() {
             let idx = graph
                 .keys()
                 .enumerate()
                 .find_map(|(i, f)| (*f == *fb).then(|| i))
                 .unwrap();
             let prob = ((*count as f64 / total_out * 100.0) as u64).clamp(0, 100)
-                + remainders.get(&i).map(|_| 1).unwrap_or(0);
+                + remainders.get(&j).map(|_| 1).unwrap_or(0);
             print!(" {idx} {prob}");
+
+            p[(i, j)] = prob as f64 / 100.;
         }
 
         print!(";");
 
         io::stdout().flush()?;
     }
+
+    // Compute stationary distribution of markov process. We can raise `p` to a large power and
+    // then take any row.
+    print!("\nStationary Distribution:");
+    for pi in p.pow(1000).row(0).iter() {
+        print!(" {pi:0.2}");
+    }
+    io::stdout().flush()?;
 
     Ok(())
 }

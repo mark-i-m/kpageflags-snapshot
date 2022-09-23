@@ -10,3 +10,4 @@ clap = { version = "3.1.3", features = ["derive"] }
 flate2 = "1.0.22"
 hdrhistogram = "7.2.0"
 encyclopagia = { git = "https://github.com/mark-i-m/encyclopagia", branch = "main" }
+nalgebra = "0.31.1"
