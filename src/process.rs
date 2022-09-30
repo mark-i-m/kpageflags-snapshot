@@ -426,9 +426,11 @@ pub fn markov<R: Read, K: Flaggy>(
                 .unwrap();
             let prob = ((*count as f64 / total_out * 100.0) as u64).clamp(0, 100)
                 + remainders.get(&j).map(|_| 1).unwrap_or(0);
-            print!(" {idx} {prob}");
 
-            p[(i, j)] = prob as f64 / 100.;
+            if prob > 0 {
+                print!(" {idx} {prob}");
+                p[(i, j)] = prob as f64 / 100.;
+            }
         }
 
         print!(";");
