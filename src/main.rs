@@ -64,6 +64,11 @@ pub struct Args {
         multiple_values = true
     )]
     compare: Vec<PathBuf>,
+
+    /// Used for validating `superultramegafragmentor`: treat the PG_private, PG_private_2, and
+    /// PG_reserved flags as if they were other more normal flags.
+    #[clap(long)]
+    simulated_flags: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
@@ -142,11 +147,11 @@ where
     }
     if args.markov {
         let reader = open(args.gzip, &args.file)?;
-        markov(reader, &ignored_flags)?;
+        markov(reader, &ignored_flags, args.simulated_flags)?;
     }
     if args.dist {
         let reader = open(args.gzip, &args.file)?;
-        type_dists(reader, &ignored_flags)?;
+        type_dists(reader, &ignored_flags, args.simulated_flags)?;
     }
 
     if args.compare.len() > 0 {
@@ -160,12 +165,12 @@ fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     match args.kernel {
-        Kernel::V3_10_0 => process::<KPF3_10_0>(&args),
-        Kernel::V4_15_0 => process::<KPF4_15_0>(&args),
-        Kernel::V5_0_8 => process::<KPF5_0_8>(&args),
-        Kernel::V5_4_0 => process::<KPF5_4_0>(&args),
-        Kernel::V5_13_0 => process::<KPF5_13_0>(&args),
-        Kernel::V5_15_0 => process::<KPF5_15_0>(&args),
-        Kernel::V5_17_0 => process::<KPF5_17_0>(&args),
+        Kernel::V3_10_0 => process::<KPF3_10_0::Flags>(&args),
+        Kernel::V4_15_0 => process::<KPF4_15_0::Flags>(&args),
+        Kernel::V5_0_8 => process::<KPF5_0_8::Flags>(&args),
+        Kernel::V5_4_0 => process::<KPF5_4_0::Flags>(&args),
+        Kernel::V5_13_0 => process::<KPF5_13_0::Flags>(&args),
+        Kernel::V5_15_0 => process::<KPF5_15_0::Flags>(&args),
+        Kernel::V5_17_0 => process::<KPF5_17_0::Flags>(&args),
     }
 }

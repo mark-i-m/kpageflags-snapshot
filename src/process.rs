@@ -60,12 +60,14 @@ impl<K: Flaggy> Hash for CombinedPageFlags<K> {
 /// flags. This makes the stream a bit easier to plot and produce a markov process from.
 pub struct KPageFlagsProcessor<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> {
     flags: std::iter::Peekable<std::iter::Enumerate<I>>,
+    simulated_flags: bool,
 }
 
 impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> KPageFlagsProcessor<K, I> {
-    pub fn new(iter: I) -> Self {
+    pub fn new(iter: I, simulated_flags: bool) -> Self {
         Self {
             flags: iter.enumerate().peekable(),
+            simulated_flags,
         }
     }
 }
@@ -106,6 +108,40 @@ impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsProces
             }
         }
 
+        if self.simulated_flags {
+            if combined.flags.all(K::PRIVATE2)
+                && !combined
+                    .flags
+                    .any(K::PRIVATE | K::RESERVED | K::LRU | K::ANON)
+            {
+                // File pages.
+                combined.flags.clear(K::PRIVATE2);
+                combined.flags |= KPageFlags::from(K::LRU);
+            } else if combined.flags.all(K::PRIVATE)
+                && !combined
+                    .flags
+                    .any(K::PRIVATE2 | K::RESERVED | K::LRU | K::ANON)
+            {
+                // Anon pages.
+                combined.flags.clear(K::PRIVATE);
+                combined.flags |= KPageFlags::from(K::ANON);
+            } else if combined.flags.all(K::PRIVATE | K::RESERVED)
+                && !combined.flags.any(K::PRIVATE2 | K::LRU | K::ANON)
+            {
+                // Anon THP pages.
+                combined.flags.clear(K::PRIVATE | K::RESERVED);
+                combined.flags |= KPageFlags::from(K::ANON | K::THP);
+            } else if combined.flags.all(K::RESERVED)
+                && !combined
+                    .flags
+                    .any(K::PRIVATE | K::PRIVATE2 | K::LRU | K::ANON)
+            {
+                // Pinned pages.
+                combined.flags.clear(K::RESERVED);
+                combined.flags |= KPageFlags::from(K::SLAB);
+            }
+        }
+
         Some(combined)
     }
 }
@@ -141,7 +177,10 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     args: &Args,
 ) -> io::Result<()> {
-    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, ignored_flags));
+    let flags = KPageFlagsProcessor::new(
+        KPageFlagsIterator::new(reader, ignored_flags),
+        args.simulated_flags,
+    );
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
@@ -328,40 +367,44 @@ fn log2(x: u64) -> u64 {
 pub fn markov<R: Read, K: Flaggy>(
     reader: KPageFlagsReader<R, K>,
     ignored_flags: &[K],
+    simulated_flags: bool,
 ) -> io::Result<()> {
     let flags = PairIterator::new(
-        KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, ignored_flags))
-            .filter(|combined| !combined.flags.has(K::NOPAGE))
-            .filter(|combined| !combined.flags.has(K::RESERVED))
-            .map(|combined| CombinedGFPRegion {
+        KPageFlagsProcessor::new(
+            KPageFlagsIterator::new(reader, ignored_flags),
+            simulated_flags,
+        )
+        .filter(|combined| !combined.flags.any(K::NOPAGE))
+        .filter(|combined| !combined.flags.any(K::RESERVED))
+        .map(|combined| CombinedGFPRegion {
                 order: log2((combined.end - combined.start).next_power_of_two()),
                 flags:
                     // Kernel memory.
-                    if combined.flags.has(K::SLAB) {
-                    FLAGS_PINNED
-                } else if K::PGTABLE.is_some() && combined.flags.has(K::PGTABLE.unwrap()) {
-                    FLAGS_PINNED
-                }
-                // Free pages.
-                else if combined.flags.has(K::BUDDY) {
-                    FLAGS_BUDDY
-                }
-                // Anonymous memory.
-                else if combined.flags.has(K::ANON) && combined.flags.has(K::THP) {
-                    FLAGS_ANON_THP
-                }
-                else if combined.flags.has(K::ANON) {
-                    FLAGS_ANON
-                }
-                // File cache.
-                else if combined.flags.has(K::LRU) {
-                    FLAGS_FILE
-                }
-                // No flags... VM balloon drivers, IO buffers, etc.
-                else {
-                    FLAGS_NONE
-                },
-            }),
+                    if combined.flags.all(K::SLAB) {
+                        FLAGS_PINNED
+                    } else if K::PGTABLE.is_some() && combined.flags.all(K::PGTABLE.unwrap()) {
+                        FLAGS_PINNED
+                    }
+                    // Free pages.
+                    else if combined.flags.all(K::BUDDY) {
+                        FLAGS_BUDDY
+                    }
+                    // Anonymous memory.
+                    else if combined.flags.all(K::ANON | K::THP) {
+                        FLAGS_ANON_THP
+                    }
+                    else if combined.flags.all(K::ANON) {
+                        FLAGS_ANON
+                    }
+                    // File cache.
+                    else if combined.flags.all(K::LRU) {
+                        FLAGS_FILE
+                    }
+                    // No flags... VM balloon drivers, IO buffers, etc.
+                    else {
+                        FLAGS_NONE
+                    },
+        }),
     );
 
     // graph[a][b] = number of edges from a -> b in the graph.
@@ -440,9 +483,10 @@ pub fn markov<R: Read, K: Flaggy>(
 
     // Compute stationary distribution of markov process. We can raise `p` to a large power and
     // then take any row.
+    let nodes = graph.keys().collect::<Vec<_>>();
     print!("\nStationary Distribution:");
-    for pi in p.pow(1000).row(0).iter() {
-        print!(" {pi:0.2}");
+    for (i, pi) in p.pow(1000).row(0).iter().enumerate() {
+        print!(" {:x}:{}:{pi:0.2}", nodes[i].flags, nodes[i].order);
     }
     io::stdout().flush()?;
 
@@ -452,8 +496,12 @@ pub fn markov<R: Read, K: Flaggy>(
 pub fn type_dists<R: Read, K: Flaggy>(
     reader: KPageFlagsReader<R, K>,
     ignored_flags: &[K],
+    simulated_flags: bool,
 ) -> io::Result<()> {
-    let flags = KPageFlagsProcessor::new(KPageFlagsIterator::new(reader, ignored_flags));
+    let flags = KPageFlagsProcessor::new(
+        KPageFlagsIterator::new(reader, ignored_flags),
+        simulated_flags,
+    );
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
