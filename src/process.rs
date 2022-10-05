@@ -256,8 +256,9 @@ where
     I: Iterator,
     <I as Iterator>::Item: Clone,
 {
-    pub fn new(iter: I) -> Self {
-        Self { iter, prev: None }
+    pub fn new(mut iter: I) -> Self {
+        let prev = iter.next();
+        Self { iter, prev }
     }
 }
 
@@ -269,18 +270,9 @@ where
     type Item = (<I as Iterator>::Item, <I as Iterator>::Item);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.prev.is_none() {
-            self.prev = self.iter.next();
-        }
-
-        if let Some(ref mut prev) = self.prev {
-            if let Some(curr) = self.iter.next() {
-                let old_prev = prev.clone();
-                *prev = curr;
-                Some((old_prev.clone(), prev.clone()))
-            } else {
-                None
-            }
+        if let (Some(prev), Some(curr)) = (self.prev.take(), self.iter.next()) {
+            self.prev = Some(curr.clone());
+            Some((prev, curr))
         } else {
             None
         }
