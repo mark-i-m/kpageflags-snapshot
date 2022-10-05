@@ -108,36 +108,29 @@ impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsProces
             }
         }
 
-        if self.simulated_flags {
-            if combined.flags.all(K::PRIVATE2)
-                && !combined
-                    .flags
-                    .any(K::PRIVATE | K::RESERVED | K::LRU | K::ANON)
-            {
-                // File pages.
-                combined.flags.clear(K::PRIVATE2);
-                combined.flags |= KPageFlags::from(K::LRU);
-            } else if combined.flags.all(K::PRIVATE)
-                && !combined
-                    .flags
-                    .any(K::PRIVATE2 | K::RESERVED | K::LRU | K::ANON)
-            {
-                // Anon pages.
+        if self.simulated_flags && combined.flags.all(K::OWNERPRIVATE1 | K::RESERVED) {
+            combined.flags.clear(K::OWNERPRIVATE1 | K::RESERVED);
+
+            // Anon THP pages.
+            if combined.flags.all(K::PRIVATE | K::PRIVATE2) {
+                combined.flags.clear(K::PRIVATE | K::PRIVATE2);
+                combined.flags |= KPageFlags::from(K::ANON | K::THP);
+            }
+            // Anon pages.
+            else if combined.flags.all(K::PRIVATE) {
                 combined.flags.clear(K::PRIVATE);
                 combined.flags |= KPageFlags::from(K::ANON);
-            } else if combined.flags.all(K::PRIVATE | K::RESERVED)
-                && !combined.flags.any(K::PRIVATE2 | K::LRU | K::ANON)
-            {
-                // Anon THP pages.
-                combined.flags.clear(K::PRIVATE | K::RESERVED);
-                combined.flags |= KPageFlags::from(K::ANON | K::THP);
-            } else if combined.flags.all(K::RESERVED)
-                && !combined
-                    .flags
-                    .any(K::PRIVATE | K::PRIVATE2 | K::LRU | K::ANON)
-            {
-                // Pinned pages.
-                combined.flags.clear(K::RESERVED);
+            }
+            // File pages.
+            else if combined.flags.all(K::LRU) {
+                // Nothing to do...
+            }
+            // Private 2 without Private Cannot happen!
+            else if combined.flags.all(K::PRIVATE2) {
+                unreachable!();
+            }
+            // Pinned pages.
+            else {
                 combined.flags |= KPageFlags::from(K::SLAB);
             }
         }
@@ -388,8 +381,7 @@ pub fn markov<R: Read, K: Flaggy>(
                 // Anonymous memory.
                 else if combined.flags.all(K::ANON | K::THP) {
                     FLAGS_ANON_THP
-                }
-                else if combined.flags.all(K::ANON) {
+                } else if combined.flags.all(K::ANON) {
                     FLAGS_ANON
                 }
                 // File cache.
