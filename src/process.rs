@@ -400,8 +400,6 @@ pub fn markov<R: Read, K: Flaggy>(
     let mut innodes = BTreeSet::new();
     let mut graph = BTreeMap::new();
 
-    let mut total_mem = 0;
-
     for (fa, fb) in flags {
         *graph
             .entry(fa)
@@ -411,11 +409,7 @@ pub fn markov<R: Read, K: Flaggy>(
 
         outnodes.insert(fa);
         innodes.insert(fb);
-
-        total_mem += 1 << fa.order;
     }
-
-    println!("TOTAL(sanity): {}MB", total_mem >> 8);
 
     // To simplify our lives later, we check for any graph nodes that have no outgoing edges. For
     // these, we add a self-loop edge.
