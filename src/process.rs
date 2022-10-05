@@ -377,33 +377,33 @@ pub fn markov<R: Read, K: Flaggy>(
         .filter(|combined| !combined.flags.any(K::NOPAGE))
         .filter(|combined| !combined.flags.any(K::RESERVED))
         .map(|combined| CombinedGFPRegion {
-                order: log2((combined.end - combined.start).next_power_of_two()),
-                flags:
-                    // Kernel memory.
-                    if combined.flags.all(K::SLAB) {
-                        FLAGS_PINNED
-                    } else if K::PGTABLE.is_some() && combined.flags.all(K::PGTABLE.unwrap()) {
-                        FLAGS_PINNED
-                    }
-                    // Free pages.
-                    else if combined.flags.all(K::BUDDY) {
-                        FLAGS_BUDDY
-                    }
-                    // Anonymous memory.
-                    else if combined.flags.all(K::ANON | K::THP) {
-                        FLAGS_ANON_THP
-                    }
-                    else if combined.flags.all(K::ANON) {
-                        FLAGS_ANON
-                    }
-                    // File cache.
-                    else if combined.flags.all(K::LRU) {
-                        FLAGS_FILE
-                    }
-                    // No flags... VM balloon drivers, IO buffers, etc.
-                    else {
-                        FLAGS_NONE
-                    },
+            order: log2((combined.end - combined.start).next_power_of_two()),
+            flags:
+                // Kernel memory.
+                if combined.flags.all(K::SLAB) {
+                    FLAGS_PINNED
+                } else if K::PGTABLE.is_some() && combined.flags.all(K::PGTABLE.unwrap()) {
+                    FLAGS_PINNED
+                }
+                // Free pages.
+                else if combined.flags.all(K::BUDDY) {
+                    FLAGS_BUDDY
+                }
+                // Anonymous memory.
+                else if combined.flags.all(K::ANON | K::THP) {
+                    FLAGS_ANON_THP
+                }
+                else if combined.flags.all(K::ANON) {
+                    FLAGS_ANON
+                }
+                // File cache.
+                else if combined.flags.all(K::LRU) {
+                    FLAGS_FILE
+                }
+                // No flags... VM balloon drivers, IO buffers, etc.
+                else {
+                    FLAGS_NONE
+                },
         }),
     );
 

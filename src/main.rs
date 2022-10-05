@@ -10,7 +10,7 @@ use std::{
 use clap::Parser;
 use encyclopagia::kpageflags::{
     Flaggy, KPageFlagsReader, KPAGEFLAGS_PATH, KPF3_10_0, KPF4_15_0, KPF5_0_8, KPF5_13_0,
-    KPF5_15_0, KPF5_17_0, KPF5_4_0,
+    KPF5_15_0, KPF5_17_0, KPF5_4_0, KPF6_0_0,
 };
 use flate2::bufread::MultiGzDecoder;
 use process::{compare_snapshots, map_and_summary, markov, type_dists};
@@ -80,6 +80,7 @@ enum Kernel {
     V5_13_0,
     V5_15_0,
     V5_17_0,
+    V6_0_0,
 }
 
 impl FromStr for Kernel {
@@ -94,6 +95,7 @@ impl FromStr for Kernel {
             "5.13.0" => Ok(Kernel::V5_13_0),
             "5.15.0" => Ok(Kernel::V5_15_0),
             "5.17.0" => Ok(Kernel::V5_17_0),
+            "6.0.0" => Ok(Kernel::V6_0_0),
 
             other => Err(format!("Unknown kernel version: {other}")),
         }
@@ -172,5 +174,6 @@ fn main() -> std::io::Result<()> {
         Kernel::V5_13_0 => process::<KPF5_13_0::Flags>(&args),
         Kernel::V5_15_0 => process::<KPF5_15_0::Flags>(&args),
         Kernel::V5_17_0 => process::<KPF5_17_0::Flags>(&args),
+        Kernel::V6_0_0 => process::<KPF6_0_0::Flags>(&args),
     }
 }
