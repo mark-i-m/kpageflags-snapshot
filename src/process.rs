@@ -2,7 +2,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     hash::Hash,
     io::{self, Read, Write},
 };
@@ -404,9 +404,11 @@ pub fn markov<R: Read, K: Flaggy>(
     );
 
     // graph[a][b] = number of edges from a -> b in the graph.
-    let mut outnodes = HashSet::new();
-    let mut innodes = HashSet::new();
+    let mut outnodes = BTreeSet::new();
+    let mut innodes = BTreeSet::new();
     let mut graph = BTreeMap::new();
+
+    let mut total_mem = 0;
 
     for (fa, fb) in flags {
         *graph
@@ -417,7 +419,11 @@ pub fn markov<R: Read, K: Flaggy>(
 
         outnodes.insert(fa);
         innodes.insert(fb);
+
+        total_mem += 1 << fa.order;
     }
+
+    println!("TOTAL(sanity): {}MB", total_mem >> 8);
 
     // To simplify our lives later, we check for any graph nodes that have no outgoing edges. For
     // these, we add a self-loop edge.
@@ -429,11 +435,16 @@ pub fn markov<R: Read, K: Flaggy>(
             .or_insert(0) += 1;
     }
 
+    // Compute a canonical ordered list of all nodes.
+    let mut allnodes = (&innodes | &outnodes).into_iter().collect::<Vec<_>>();
+    allnodes.sort();
+
     // Compute edge probabilities and output graph. Also construct probability transition matrix
     // `p` so that we can compute the stationary distribution later.
-    let mut p = DMatrix::repeat(graph.len(), graph.len(), 0.0);
-    for (i, (fa, out)) in graph.iter().enumerate() {
-        let total_out = out.iter().map(|(_fb, count)| count).sum::<u64>() as f64;
+    let mut p = DMatrix::repeat(allnodes.len(), allnodes.len(), 0.0);
+    for (i, fa) in allnodes.iter().enumerate() {
+        let out = &graph[&fa]; // All nodes should have outgoing edges at this point.
+        let total_out = out.values().sum::<u64>() as f64;
 
         let order = fa.order;
         let flags = fa.flags;
@@ -449,25 +460,27 @@ pub fn markov<R: Read, K: Flaggy>(
         let remainders = {
             let mut remainders = out
                 .iter()
-                .map(|(_fb, count)| (*count as f64 / total_out * 100.0).fract())
-                .enumerate()
+                .map(|(fb, count)| (fb, (*count as f64 / total_out * 100.0).fract()))
                 .collect::<Vec<_>>();
-            remainders.sort_by_key(|(_, fract)| (fract * 1000.0) as u64);
-            remainders.truncate(diff);
-            remainders.into_iter().collect::<HashMap<_, _>>()
+            remainders.sort_by_key(|(_fb, fract)| (fract * 1000.0) as u64);
+            remainders
+                .into_iter()
+                .take(diff)
+                .map(|(fb, _fract)| fb)
+                .collect::<BTreeSet<_>>()
         };
 
-        for (j, (fb, count)) in out.iter().enumerate() {
-            let idx = graph
-                .keys()
-                .enumerate()
-                .find_map(|(i, f)| (*f == *fb).then(|| i))
-                .unwrap();
-            let prob = ((*count as f64 / total_out * 100.0) as u64).clamp(0, 100)
-                + remainders.get(&j).map(|_| 1).unwrap_or(0);
+        for (j, fb) in allnodes.iter().enumerate() {
+            let count = if let Some(count) = out.get(&fb) {
+                *count as f64
+            } else {
+                continue;
+            };
+            let prob = (count / total_out * 100.0).clamp(0.0, 100.0) as u64
+                + if remainders.contains(&fb) { 1 } else { 0 };
 
             if prob > 0 {
-                print!(" {idx} {prob}");
+                print!(" {j} {prob}");
                 p[(i, j)] = prob as f64 / 100.;
             }
         }
@@ -479,10 +492,9 @@ pub fn markov<R: Read, K: Flaggy>(
 
     // Compute stationary distribution of markov process. We can raise `p` to a large power and
     // then take any row.
-    let nodes = graph.keys().collect::<Vec<_>>();
     print!("\nStationary Distribution:");
     for (i, pi) in p.pow(1000).row(0).iter().enumerate() {
-        print!(" {:x}:{}:{pi:0.2}", nodes[i].flags, nodes[i].order);
+        print!(" {:x}:{}:{pi:0.2}", allnodes[i].flags, allnodes[i].order);
     }
     io::stdout().flush()?;
 
