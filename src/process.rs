@@ -297,10 +297,14 @@ struct CombinedGFPRegion {
 
 impl Ord for CombinedGFPRegion {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let combinedself = self.order ^ self.flags;
-        let combinedother = other.order ^ other.flags;
+        let flagscmp = Ord::cmp(&self.flags, &other.flags);
+        let ordercmp = Ord::cmp(&self.order, &other.order);
 
-        Ord::cmp(&combinedself, &combinedother)
+        if flagscmp == Ordering::Equal {
+            ordercmp
+        } else {
+            flagscmp
+        }
     }
 }
 impl PartialOrd for CombinedGFPRegion {
