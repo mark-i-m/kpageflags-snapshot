@@ -27,27 +27,6 @@ pub struct CombinedPageFlags<K: Flaggy> {
     pub flags: KPageFlags<K>,
 }
 
-impl<K: Flaggy> Ord for CombinedPageFlags<K> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let combinedself = (self.end - self.start) ^ self.flags.as_u64();
-        let combinedother = (other.end - other.start) ^ other.flags.as_u64();
-
-        Ord::cmp(&combinedself, &combinedother)
-    }
-}
-impl<K: Flaggy> PartialOrd for CombinedPageFlags<K> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(Self::cmp(self, other))
-    }
-}
-
-impl<K: Flaggy> PartialEq for CombinedPageFlags<K> {
-    fn eq(&self, other: &Self) -> bool {
-        matches!(Self::cmp(self, other), Ordering::Equal)
-    }
-}
-impl<K: Flaggy> Eq for CombinedPageFlags<K> {}
-
 impl<K: Flaggy> Hash for CombinedPageFlags<K> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Hash size and flags.
