@@ -332,6 +332,33 @@ fn log2(x: u64) -> u64 {
     }
 }
 
+pub fn kpf_to_abstract_flags<K: Flaggy>(flags: KPageFlags<K>) -> u64 {
+    // Kernel memory.
+    if flags.all(K::SLAB) {
+        FLAGS_PINNED
+    } else if K::PGTABLE.is_some() && flags.all(K::PGTABLE.unwrap()) {
+        FLAGS_PINNED
+    }
+    // Free pages.
+    else if flags.all(K::BUDDY) {
+        FLAGS_BUDDY
+    }
+    // Anonymous memory.
+    else if flags.all(K::ANON | K::THP) {
+        FLAGS_ANON_THP
+    } else if flags.all(K::ANON) {
+        FLAGS_ANON
+    }
+    // File cache.
+    else if flags.all(K::LRU) {
+        FLAGS_FILE
+    }
+    // No flags... VM balloon drivers, IO buffers, etc.
+    else {
+        FLAGS_NONE
+    }
+}
+
 pub fn markov<R: Read, K: Flaggy>(
     reader: KPageFlagsReader<R, K>,
     ignored_flags: &[K],
@@ -346,31 +373,7 @@ pub fn markov<R: Read, K: Flaggy>(
         .filter(|combined| !combined.flags.any(K::RESERVED))
         .map(|combined| CombinedGFPRegion {
             order: log2((combined.end - combined.start).next_power_of_two()),
-            flags:
-                // Kernel memory.
-                if combined.flags.all(K::SLAB) {
-                    FLAGS_PINNED
-                } else if K::PGTABLE.is_some() && combined.flags.all(K::PGTABLE.unwrap()) {
-                    FLAGS_PINNED
-                }
-                // Free pages.
-                else if combined.flags.all(K::BUDDY) {
-                    FLAGS_BUDDY
-                }
-                // Anonymous memory.
-                else if combined.flags.all(K::ANON | K::THP) {
-                    FLAGS_ANON_THP
-                } else if combined.flags.all(K::ANON) {
-                    FLAGS_ANON
-                }
-                // File cache.
-                else if combined.flags.all(K::LRU) {
-                    FLAGS_FILE
-                }
-                // No flags... VM balloon drivers, IO buffers, etc.
-                else {
-                    FLAGS_NONE
-                },
+            flags: kpf_to_abstract_flags(combined.flags),
         }),
     );
 
@@ -462,6 +465,46 @@ pub fn markov<R: Read, K: Flaggy>(
         print!(" {:x}:{}:{pi:0.2}", allnodes[i].flags, allnodes[i].order);
     }
     io::stdout().flush()?;
+
+    Ok(())
+}
+
+pub fn empirical_dist<R: Read, K: Flaggy>(
+    reader: KPageFlagsReader<R, K>,
+    ignored_flags: &[K],
+    simulated_flags: bool,
+) -> io::Result<()> {
+    let flags = KPageFlagsProcessor::new(
+        KPageFlagsIterator::new(reader, ignored_flags),
+        simulated_flags,
+    )
+    .filter(|combined| !combined.flags.any(K::NOPAGE))
+    .filter(|combined| !combined.flags.any(K::RESERVED))
+    .map(|combined| CombinedGFPRegion {
+        order: log2((combined.end - combined.start).next_power_of_two()),
+        flags: kpf_to_abstract_flags(combined.flags),
+    });
+    let mut stats = BTreeMap::new();
+    let mut total = 0.0;
+
+    // Iterate over contiguous physical memory regions with similar properties.
+    for region in flags {
+        let orders = stats
+            .entry(region.flags)
+            .or_insert_with(|| [0; MAX_ORDER as usize + 1]);
+        orders[region.order as usize] += 1;
+        total += (1 << region.order) as f64;
+    }
+
+    // Print some stats about the different types of page usage.
+    print!("\nEmpirical Distribution:");
+    for (flags, orders) in stats.into_iter() {
+        for o in 0..orders.len() {
+            if (orders[o] << o) as f64 / total > 0.009 {
+                print!(" {flags:x}:{o}:{:0.2}", (orders[o] << o) as f64 / total);
+            }
+        }
+    }
 
     Ok(())
 }

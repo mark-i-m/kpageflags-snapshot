@@ -13,7 +13,7 @@ use encyclopagia::kpageflags::{
     KPF5_15_0, KPF5_17_0, KPF5_4_0, KPF6_0_0,
 };
 use flate2::bufread::MultiGzDecoder;
-use process::{compare_snapshots, map_and_summary, markov, type_dists};
+use process::{compare_snapshots, empirical_dist, map_and_summary, markov, type_dists};
 
 mod process;
 
@@ -54,6 +54,10 @@ pub struct Args {
     /// Print the Markov Process.
     #[clap(long)]
     markov: bool,
+
+    /// Print the empirical distribution of memory regions.
+    #[clap(long)]
+    empirical_dist: bool,
 
     /// Compare the following snapshots in the given order (pass this flag multiple times) to see
     /// the change of in memory usage over time on a page by page basis.
@@ -154,6 +158,10 @@ where
     if args.dist {
         let reader = open(args.gzip, &args.file)?;
         type_dists(reader, &ignored_flags, args.simulated_flags)?;
+    }
+    if args.empirical_dist {
+        let reader = open(args.gzip, &args.file)?;
+        empirical_dist(reader, &ignored_flags, args.simulated_flags)?;
     }
 
     if args.compare.len() > 0 {
