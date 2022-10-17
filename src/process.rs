@@ -474,11 +474,45 @@ pub fn markov<R: Read, K: Flaggy>(
         io::stdout().flush()?;
     }
 
-    // Compute stationary distribution of markov process. We can raise `p` to a large power and
-    // then take any row.
+    // Compute stationary distribution of markov process. For an aperiodic MP, the limiting
+    // distribution L_a,b = lim_{n->inf} P(X_n = b | X_0 = a) will be equivalent to the stationary
+    // distribution. Thus, we can approximate the stationary distribution by just raising the
+    // probability transition matrix `p` to some large power.
+    //
+    // However, if the MP is periodic, then the limiting distribution will not exist. Instead, we
+    // can find the periodic probabilities for a full cycle (deep in the future) and average them
+    // together, since each state in the cycle is equally likely. This will give us the stationary
+    // distribution.
+    let limiting_approx = p.pow(1000);
+
+    let period = {
+        let mut period = 1; // start assuming aperiodic.
+        let mut next = &limiting_approx * &p;
+        loop {
+            let diff = (&next - (&limiting_approx)).norm();
+            if diff < 0.1 {
+                break;
+            } else {
+                period += 1;
+                next = &next * &p; // take a step.
+            }
+        }
+        period
+    };
+
+    let stationary: DMatrix<f64> = (0..period)
+        .map(|i| {
+            // using i+1 avoids dealing with i==0...
+            (&limiting_approx) * p.pow(i + 1)
+        })
+        .sum::<DMatrix<_>>()
+        / (period as f64);
+
     print!("\nStationary Distribution:");
-    for (i, pi) in p.pow(1000).row(0).iter().enumerate() {
-        print!(" {:x}:{}:{pi:0.2}", allnodes[i].flags, allnodes[i].order);
+    for (i, pi) in stationary.row(0).iter().enumerate() {
+        if *pi >= 0.01 {
+            print!(" {:x}:{}:{pi:0.2}", allnodes[i].flags, allnodes[i].order);
+        }
     }
     io::stdout().flush()?;
 
