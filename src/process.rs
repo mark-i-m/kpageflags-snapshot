@@ -363,6 +363,7 @@ pub fn markov<R: Read, K: Flaggy>(
     reader: KPageFlagsReader<R, K>,
     ignored_flags: &[K],
     simulated_flags: bool,
+    simplify_mp: Option<usize>,
 ) -> io::Result<()> {
     let flags = PairIterator::new(
         KPageFlagsProcessor::new(
@@ -401,6 +402,21 @@ pub fn markov<R: Read, K: Flaggy>(
             .or_insert_with(BTreeMap::new)
             .entry(sink)
             .or_insert(0) += 1;
+    }
+
+    // Simplify the MP if needed.
+    if let Some(pct) = simplify_mp {
+        for (fa, outgoing) in graph.iter_mut() {
+            let total_out = outgoing.values().sum::<u64>() as usize;
+            let tenpct = total_out * pct / 100;
+
+            outgoing.retain(|_fb, count| *count as usize >= tenpct);
+
+            // If no edges made the cut (hehe), add a self-loop.
+            if outgoing.is_empty() {
+                outgoing.insert(*fa, 1);
+            }
+        }
     }
 
     // Compute a canonical ordered list of all nodes.

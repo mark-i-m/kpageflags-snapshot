@@ -7,7 +7,7 @@ use std::{
     str::FromStr,
 };
 
-use clap::Parser;
+use clap::{builder::RangedU64ValueParser, Parser};
 use encyclopagia::kpageflags::{
     Flaggy, KPageFlagsReader, KPAGEFLAGS_PATH, KPF3_10_0, KPF4_15_0, KPF5_0_8, KPF5_13_0,
     KPF5_15_0, KPF5_17_0, KPF5_4_0, KPF6_0_0,
@@ -54,6 +54,15 @@ pub struct Args {
     /// Print the Markov Process.
     #[clap(long)]
     markov: bool,
+
+    /// Simplify the MP by culling edges with a transition probability less than the parameter. The
+    /// value should be an integer between 0 and 100.
+    #[clap(
+        long,
+        requires("markov"),
+        value_parser = RangedU64ValueParser::<usize>::new().range(0..=100)
+    )]
+    simplify_mp: Option<usize>,
 
     /// Print the empirical distribution of memory regions.
     #[clap(long)]
@@ -153,7 +162,12 @@ where
     }
     if args.markov {
         let reader = open(args.gzip, &args.file)?;
-        markov(reader, &ignored_flags, args.simulated_flags)?;
+        markov(
+            reader,
+            &ignored_flags,
+            args.simulated_flags,
+            args.simplify_mp,
+        )?;
     }
     if args.dist {
         let reader = open(args.gzip, &args.file)?;
