@@ -541,17 +541,17 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     for region in flags {
         let orders = stats
             .entry(region.flags)
-            .or_insert_with(|| [0; MAX_ORDER as usize + 1]);
-        orders[region.order as usize] += 1;
-        total += (1 << region.order) as f64;
+            .or_insert_with(|| [0.0; MAX_ORDER as usize + 1]);
+        orders[region.order as usize] += 1.0;
+        total += 1.0;
     }
 
     // Print some stats about the different types of page usage.
     print!("\nEmpirical Distribution:");
     for (flags, orders) in stats.into_iter() {
         for o in 0..orders.len() {
-            if (orders[o] << o) as f64 / total > 0.009 {
-                print!(" {flags:x}:{o}:{:0.2}", (orders[o] << o) as f64 / total);
+            if orders[o] / total >= 0.01 {
+                print!(" {flags:x}:{o}:{:0.2}", orders[o] / total);
             }
         }
     }
