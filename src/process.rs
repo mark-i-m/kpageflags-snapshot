@@ -2,19 +2,22 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     hash::Hash,
-    io::{self, Read, Write},
+    io::{self, Read},
 };
 
 use encyclopagia::kpageflags::{Flaggy, KPageFlags, KPageFlagsIterator, KPageFlagsReader};
 use hdrhistogram::Histogram;
-use nalgebra::DMatrix;
+use nalgebra::{DMatrix, DVector};
 
 use crate::Args;
 
 /// The `MAX_ORDER` for Linux 5.17 (and a lot of older versions).
-const MAX_ORDER: u64 = 10;
+pub const MAX_ORDER: u64 = 10;
+
+/// The  granularity with which probabilities are expressed in MPs.
+pub const MP_GRANULARITY: f64 = 100.0;
 
 #[derive(Copy, Clone, Debug)]
 pub struct CombinedPageFlags<K: Flaggy> {
@@ -359,11 +362,335 @@ pub fn kpf_to_abstract_flags<K: Flaggy>(flags: KPageFlags<K>) -> u64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Reachability {
+    Reachable,
+    Unreachable,
+}
+
+/// Represents a Markov Process with the ability to cull unlikely states and check irreducibility.
+struct MarkovProcess {
+    // The main representation of the process is via the transition probability matrix. The matrix
+    // shows the weight of each transition. We also keep a list of labels corresponding to the
+    // different indices of the matrix. Both the label list and the matrix are in the same order.
+    /// Transition probability matrix `p`: `p[i,j]` is the probability of going from `i` to `j` in
+    /// one step. `labels[i]` is the label of `i`.
+    p: DMatrix<f64>,
+
+    /// Node labels.
+    labels: Vec<CombinedGFPRegion>,
+}
+
+impl MarkovProcess {
+    /// Construct a MP from the given iterator.
+    pub fn construct(flags: impl Iterator<Item = (CombinedGFPRegion, CombinedGFPRegion)>) -> Self {
+        // graph[a][b] = number of edges from a -> b in the graph.
+        let mut graph = BTreeMap::new();
+        for (fa, fb) in flags {
+            // Add the edge...
+            *graph
+                .entry(fa)
+                .or_insert_with(BTreeMap::new)
+                .entry(fb)
+                .or_insert(0.0) += 1.0;
+
+            // And make sure both nodes are in the graph.
+            graph.entry(fb).or_insert_with(BTreeMap::new);
+        }
+
+        // Compute a canonical ordered list of all nodes.
+        let mut labels = graph.keys().cloned().collect::<Vec<_>>();
+        labels.sort();
+
+        // Construct probability transition matrix.
+        let mut p = DMatrix::repeat(labels.len(), labels.len(), 0.0);
+        for (i, fa) in labels.iter().enumerate() {
+            let outgoing = &graph[&fa];
+            let total_out = outgoing.values().sum::<f64>();
+
+            for (j, fb) in labels.iter().enumerate() {
+                let count = outgoing.get(&fb).unwrap_or(&0.0);
+                let prob = count / total_out;
+                p[(i, j)] = prob;
+            }
+        }
+
+        MarkovProcess { p, labels }
+    }
+
+    /// Renormalize the probabilities in a row to ensure that they add to 1.
+    fn renormalize_row(&mut self, node: usize) {
+        let total = self.p.row(node).sum();
+        for to in 0..self.p.ncols() {
+            self.p[(node, to)] /= total;
+        }
+    }
+
+    /// Remove the given nodes from the MP.
+    fn remove_nodes(&mut self, to_remove: &[usize]) {
+        // Sort in reverse order to avoid removals messing up the indices.
+        let mut to_remove = to_remove.to_owned();
+        to_remove.sort_by_key(|k| -(*k as i64));
+
+        let new_p = self
+            .p
+            .clone()
+            .remove_rows_at(&to_remove)
+            .remove_columns_at(&to_remove);
+        self.p = new_p;
+
+        for node in to_remove.into_iter() {
+            self.labels.remove(node);
+        }
+    }
+
+    /// Cull unlikely edges and nodes from the MP. An edge `a->b` is removed if it has a
+    /// probability less than `tol`. In this case, the other edges of `a` are renormalized so that
+    /// their probabilities sum to 1 before any more edges are culled. `b` is removed if it has no
+    /// incoming edges after culling `a->b`.
+    pub fn cull_unlikely(&mut self, tol: f64) {
+        loop {
+            // Remove at most one edge from each node that has probability < `tol`.
+            let mut culled_nodes = Vec::new();
+            for from in 0..self.p.nrows() {
+                if let Some(to) = (0..self.p.ncols())
+                    .find(|&to| f64::EPSILON < self.p[(from, to)] && self.p[(from, to)] < tol)
+                {
+                    self.p[(from, to)] = 0.0;
+                    culled_nodes.push(from);
+                }
+            }
+
+            // If no edges were removed, we reached a fixed point.
+            if culled_nodes.is_empty() {
+                return;
+            };
+
+            // Renormalize remaining edges on each nodes so they sum to 1.
+            for &node in culled_nodes.iter() {
+                self.renormalize_row(node);
+            }
+
+            // If a node has no incoming edges, remove it. We go in reverse order so as not to mess
+            // up indexing as we remove elements.
+            let mut to_remove: Vec<usize> = Vec::new();
+            for node in 0..self.p.ncols() {
+                let total_incoming = self.p.column(node).sum();
+                if total_incoming < f64::EPSILON {
+                    to_remove.push(node);
+                }
+            }
+            self.remove_nodes(&to_remove);
+        }
+    }
+
+    /// Computes a reachability matrix for the current MP. A node is not considered to be
+    /// reachable from itself unless it has a self-loop.
+    ///
+    /// Returns `reachability[i][j] := i~~>j`.
+    ///
+    /// The current implementation is O(n^4), but it probably doesn't matter.
+    fn reachability(&self) -> Vec<Vec<Reachability>> {
+        // reachability[i][j] := i~~>j... a node is not self-reachable unless it has a self-loop or
+        // it can reach another node that can reach it.
+        let mut reachability: Vec<Vec<_>> =
+            vec![vec![Reachability::Unreachable; self.p.ncols()]; self.p.nrows()];
+
+        // BFS
+        for from in 0..self.p.nrows() {
+            for to in 0..self.p.ncols() {
+                if self.p[(from, to)] > f64::EPSILON {
+                    reachability[from][to] = Reachability::Reachable;
+                }
+            }
+        }
+        for _ in 0..self.p.nrows() {
+            for from in 0..self.p.nrows() {
+                for mid in 0..self.p.ncols() {
+                    for to in 0..self.p.ncols() {
+                        if reachability[from][mid] == Reachability::Reachable
+                            && reachability[mid][to] == Reachability::Reachable
+                        {
+                            reachability[from][to] = Reachability::Reachable;
+                        }
+                    }
+                }
+            }
+        }
+
+        reachability
+    }
+
+    /// Computes a list of transient nodes in the MP.
+    fn transient_nodes(&self) -> Vec<usize> {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        enum Transience {
+            Transient,
+            Recurrent,
+        }
+
+        // Corner case: empty MP...
+        if self.p.nrows() == 0 {
+            return Vec::new();
+        }
+
+        // A node `a` is transient if there exists another node `b` such that `a~~>b` but not
+        // `b~~>a`, i.e., we can get from `a` to `b` but not back.
+        let reachability = self.reachability();
+        let mut transience: Vec<_> = vec![Transience::Recurrent; self.p.nrows()];
+        for node in 0..self.p.nrows() {
+            for to in 0..self.p.ncols() {
+                if reachability[node][to] == Reachability::Reachable
+                    && reachability[to][node] == Reachability::Unreachable
+                {
+                    transience[node] = Transience::Transient;
+                }
+            }
+        }
+
+        // Return nodes identified as transient.
+        transience
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, transience)| matches!(transience, Transience::Transient).then_some(i))
+            .collect()
+    }
+
+    /// Make the graph irreducbile. Get rid of transient nodes and connect unconnected components.
+    /// This also nicely handles sink nodes.
+    pub fn cleanup_mp(&mut self) {
+        // Check for transient nodes and remove them.
+        let transient_nodes = self.transient_nodes();
+        self.remove_nodes(&transient_nodes);
+
+        // We may have unconnected subgraphs, especially after culling edges or removing transient
+        // nodes. Connect them by adding equally weighted edges from each connected component to
+        // each of the others.
+        let reachability = self.reachability();
+        let mut connected_components = vec![0];
+        for node in 0..self.p.nrows() {
+            if connected_components
+                .iter()
+                .all(|cc| reachability[*cc][node] == Reachability::Unreachable)
+            {
+                connected_components.push(node);
+            }
+        }
+
+        // Given that the original MP was probably not disconnected, we can guess that the edges
+        // that were removed must have been unlikely overall. So when we add edges back to connect
+        // the MP, let's not make the new edges likely.
+        for &from in connected_components.iter() {
+            for &to in connected_components.iter() {
+                if from != to {
+                    // will be normalized down... to < 0.1 / len(connected_components)
+                    self.p[(from, to)] = 0.1;
+                }
+            }
+            self.renormalize_row(from);
+        }
+    }
+
+    /// Compute and return the stationary distribution of the MP.
+    pub fn stationary_dist(&self) -> DVector<f64> {
+        // Compute stationary distribution of markov process. For an aperiodic MP, the limiting
+        // distribution L_a,b = lim_{n->inf} P(X_n = b | X_0 = a) will be equivalent to the stationary
+        // distribution. Thus, we can approximate the stationary distribution by just raising the
+        // probability transition matrix `p` to some large power.
+        //
+        // However, if the MP is periodic, then the limiting distribution will not exist. Instead, we
+        // can find the periodic probabilities for a full cycle (deep in the future) and average them
+        // together, since each state in the cycle is equally likely. This will give us the stationary
+        // distribution.
+        let limiting_approx = self.p.pow(1000);
+
+        let period = {
+            let mut period = 1; // start assuming aperiodic.
+            let mut next = &limiting_approx * &self.p;
+            loop {
+                let diff = (&next - (&limiting_approx)).norm();
+                if diff < 0.1 {
+                    break;
+                } else {
+                    period += 1;
+                    next = &next * &self.p; // take a step.
+                }
+            }
+            period
+        };
+
+        let stationary: DMatrix<f64> = (0..period)
+            .map(|i| {
+                // using i+1 avoids dealing with i==0...
+                (&limiting_approx) * self.p.pow(i + 1)
+            })
+            .sum::<DMatrix<_>>()
+            / (period as f64);
+
+        stationary.fixed_rows::<1>(0).transpose().into_owned()
+    }
+
+    pub fn p(&self) -> &DMatrix<f64> {
+        &self.p
+    }
+
+    pub fn labels(&self) -> impl Iterator<Item = &CombinedGFPRegion> {
+        self.labels.iter()
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn mp_test() {
+    const EPSILON: f64 = 0.00001;
+
+    {
+        let mut mp = MarkovProcess {
+            p: DMatrix::from_row_slice(3, 3, &[0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5]),
+            labels: vec![CombinedGFPRegion { order: 0, flags: 0 }; 3],
+        };
+
+        mp.cleanup_mp();
+
+        assert_eq!(mp.p.nrows(), 2);
+        assert_eq!(mp.p.ncols(), 2);
+
+        assert!(mp.p[(0, 0)] - 0.5 < EPSILON);
+        assert!(mp.p[(1, 1)] - 0.5 < EPSILON);
+        assert!(mp.p[(0, 1)] - 0.5 < EPSILON);
+        assert!(mp.p[(1, 0)] - 0.5 < EPSILON);
+
+        let s = mp.stationary_dist();
+        assert!(s[0] - 0.5 < EPSILON);
+        assert!(s[1] - 0.5 < EPSILON);
+    }
+
+    {
+        let mut mp = MarkovProcess {
+            p: DMatrix::from_row_slice(3, 3, &[0.0, 0.5, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
+            labels: vec![CombinedGFPRegion { order: 0, flags: 0 }; 3],
+        };
+        mp.cleanup_mp();
+
+        assert_eq!(mp.p.nrows(), 2);
+        assert_eq!(mp.p.ncols(), 2);
+
+        assert!(mp.p[(0, 0)] - 0.909090909090909 < EPSILON);
+        assert!(mp.p[(1, 1)] - 0.909090909090909 < EPSILON);
+        assert!(mp.p[(0, 1)] - 0.090909090909090 < EPSILON);
+        assert!(mp.p[(1, 0)] - 0.090909090909090 < EPSILON);
+
+        let s = mp.stationary_dist();
+        assert!(s[0] - 0.5 < EPSILON);
+        assert!(s[1] - 0.5 < EPSILON);
+    }
+}
+
 pub fn markov<R: Read, K: Flaggy>(
     reader: KPageFlagsReader<R, K>,
     ignored_flags: &[K],
     simulated_flags: bool,
-    simplify_mp: Option<usize>,
+    simplify_mp: usize,
 ) -> io::Result<()> {
     let flags = PairIterator::new(
         KPageFlagsProcessor::new(
@@ -378,143 +705,37 @@ pub fn markov<R: Read, K: Flaggy>(
         }),
     );
 
-    // graph[a][b] = number of edges from a -> b in the graph.
-    let mut outnodes = BTreeSet::new();
-    let mut innodes = BTreeSet::new();
-    let mut graph = BTreeMap::new();
+    let mut mp = MarkovProcess::construct(flags);
 
-    for (fa, fb) in flags {
-        *graph
-            .entry(fa)
-            .or_insert_with(BTreeMap::new)
-            .entry(fb)
-            .or_insert(0) += 1;
+    // Remove edges and nodes that are too unlikely. By default, this is just nodes that have a
+    // probability too small to be represented, but the user can also set the threshold higher.
+    mp.cull_unlikely(simplify_mp as f64 / MP_GRANULARITY);
 
-        outnodes.insert(fa);
-        innodes.insert(fb);
-    }
+    // Make the MP a bit easier to simulate.
+    mp.cleanup_mp();
 
-    // To simplify our lives later, we check for any graph nodes that have no outgoing edges. For
-    // these, we add a self-loop edge.
-    for sink in &innodes - &outnodes {
-        *graph
-            .entry(sink)
-            .or_insert_with(BTreeMap::new)
-            .entry(sink)
-            .or_insert(0) += 1;
-    }
-
-    // Simplify the MP if needed.
-    if let Some(pct) = simplify_mp {
-        for (fa, outgoing) in graph.iter_mut() {
-            let total_out = outgoing.values().sum::<u64>() as usize;
-            let tenpct = total_out * pct / 100;
-
-            outgoing.retain(|_fb, count| *count as usize >= tenpct);
-
-            // If no edges made the cut (hehe), add a self-loop.
-            if outgoing.is_empty() {
-                outgoing.insert(*fa, 1);
+    // Print the MP.
+    for (i, fa) in mp.labels().enumerate() {
+        print!("{} {:x}", fa.order, fa.flags);
+        for (j, _fb) in mp.labels().enumerate() {
+            let prob = mp.p()[(i, j)];
+            if prob >= 0.01 {
+                print!(" {j} {}", (prob * MP_GRANULARITY) as u64);
             }
         }
+        print!(";")
     }
+    println!();
 
-    // Compute a canonical ordered list of all nodes.
-    let mut allnodes = (&innodes | &outnodes).into_iter().collect::<Vec<_>>();
-    allnodes.sort();
-
-    // Compute edge probabilities and output graph. Also construct probability transition matrix
-    // `p` so that we can compute the stationary distribution later.
-    let mut p = DMatrix::repeat(allnodes.len(), allnodes.len(), 0.0);
-    for (i, fa) in allnodes.iter().enumerate() {
-        let out = &graph[&fa]; // All nodes should have outgoing edges at this point.
-        let total_out = out.values().sum::<u64>() as f64;
-
-        let order = fa.order;
-        let flags = fa.flags;
-        print!("{order} {flags:X}");
-
-        // We need to make sure that the values add to 100. We do this by adding 1 to the rounded
-        // probabilities that are largest until we make up the rounding error.
-        let diff = 100
-            - out
-                .iter()
-                .map(|(_fb, count)| ((*count as f64 / total_out * 100.0) as usize).clamp(0, 100))
-                .sum::<usize>();
-        let remainders = {
-            let mut remainders = out
-                .iter()
-                .map(|(fb, count)| (fb, (*count as f64 / total_out * 100.0).fract()))
-                .collect::<Vec<_>>();
-            remainders.sort_by_key(|(_fb, fract)| (fract * 1000.0) as u64);
-            remainders
-                .into_iter()
-                .take(diff)
-                .map(|(fb, _fract)| fb)
-                .collect::<BTreeSet<_>>()
-        };
-
-        for (j, fb) in allnodes.iter().enumerate() {
-            let count = if let Some(count) = out.get(&fb) {
-                *count as f64
-            } else {
-                continue;
-            };
-            let prob = (count / total_out * 100.0).clamp(0.0, 100.0) as u64
-                + if remainders.contains(&fb) { 1 } else { 0 };
-
-            if prob > 0 {
-                print!(" {j} {prob}");
-                p[(i, j)] = prob as f64 / 100.;
-            }
-        }
-
-        print!(";");
-
-        io::stdout().flush()?;
-    }
-
-    // Compute stationary distribution of markov process. For an aperiodic MP, the limiting
-    // distribution L_a,b = lim_{n->inf} P(X_n = b | X_0 = a) will be equivalent to the stationary
-    // distribution. Thus, we can approximate the stationary distribution by just raising the
-    // probability transition matrix `p` to some large power.
-    //
-    // However, if the MP is periodic, then the limiting distribution will not exist. Instead, we
-    // can find the periodic probabilities for a full cycle (deep in the future) and average them
-    // together, since each state in the cycle is equally likely. This will give us the stationary
-    // distribution.
-    let limiting_approx = p.pow(1000);
-
-    let period = {
-        let mut period = 1; // start assuming aperiodic.
-        let mut next = &limiting_approx * &p;
-        loop {
-            let diff = (&next - (&limiting_approx)).norm();
-            if diff < 0.1 {
-                break;
-            } else {
-                period += 1;
-                next = &next * &p; // take a step.
-            }
-        }
-        period
-    };
-
-    let stationary: DMatrix<f64> = (0..period)
-        .map(|i| {
-            // using i+1 avoids dealing with i==0...
-            (&limiting_approx) * p.pow(i + 1)
-        })
-        .sum::<DMatrix<_>>()
-        / (period as f64);
-
-    print!("\nStationary Distribution:");
-    for (i, pi) in stationary.row(0).iter().enumerate() {
+    // Print the Stationary Dist.
+    let stationary = mp.stationary_dist();
+    print!("Stationary Distribution:");
+    for (f, pi) in mp.labels().zip(stationary.iter()) {
         if *pi >= 0.01 {
-            print!(" {:x}:{}:{pi:0.2}", allnodes[i].flags, allnodes[i].order);
+            print!(" {:x}:{}:{pi:0.2}", f.flags, f.order);
         }
     }
-    io::stdout().flush()?;
+    println!();
 
     Ok(())
 }
@@ -547,7 +768,7 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     }
 
     // Print some stats about the different types of page usage.
-    print!("\nEmpirical Distribution:");
+    print!("Empirical Distribution:");
     for (flags, orders) in stats.into_iter() {
         for o in 0..orders.len() {
             if orders[o] / total >= 0.01 {

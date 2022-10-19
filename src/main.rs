@@ -56,13 +56,16 @@ pub struct Args {
     markov: bool,
 
     /// Simplify the MP by culling edges with a transition probability less than the parameter. The
-    /// value should be an integer between 0 and 100.
+    /// value should be an integer between 1 and `MP_GRANULARITY`. The default is 1 because that is
+    /// the smallest probability representable by the MP format.
     #[clap(
         long,
         requires("markov"),
-        value_parser = RangedU64ValueParser::<usize>::new().range(0..=100)
+        value_parser = RangedU64ValueParser::<usize>::new()
+                        .range(1..=(process::MP_GRANULARITY as u64)),
+        default_value("1")
     )]
-    simplify_mp: Option<usize>,
+    simplify_mp: usize,
 
     /// Print the empirical distribution of memory regions.
     #[clap(long)]
