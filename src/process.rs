@@ -757,7 +757,7 @@ pub fn markov<R: Read, K: Flaggy>(
         print!("{} {:x}", fa.order, fa.flags);
         for (j, _fb) in mp.labels().enumerate() {
             let prob = mp.p()[(i, j)];
-            if prob >= 0.01 {
+            if prob >= 1.0 / MP_GRANULARITY {
                 print!(" {j} {}", (prob * MP_GRANULARITY) as u64);
             }
         }
@@ -769,7 +769,7 @@ pub fn markov<R: Read, K: Flaggy>(
     let stationary = mp.stationary_dist();
     print!("Stationary Distribution:");
     for (f, pi) in mp.labels().zip(stationary.iter()) {
-        if *pi >= 0.01 {
+        if *pi >= 1.0 / MP_GRANULARITY {
             print!(" {:x}:{}:{pi:0.2}", f.flags, f.order);
         }
     }
@@ -809,7 +809,7 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     print!("Empirical Distribution:");
     for (flags, orders) in stats.into_iter() {
         for o in 0..orders.len() {
-            if orders[o] / total >= 0.01 {
+            if orders[o] / total >= 1.0 / MP_GRANULARITY {
                 print!(" {flags:x}:{o}:{:0.2}", orders[o] / total);
             }
         }
