@@ -3,6 +3,7 @@
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
+    fmt::Display,
     hash::Hash,
     io::{self, Read},
 };
@@ -300,6 +301,21 @@ impl Hash for CombinedGFPRegion {
         // Hash size and flags.
         self.order.hash(state);
         self.flags.hash(state);
+    }
+}
+
+impl Display for CombinedGFPRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ty = match self.flags {
+            FLAGS_BUDDY => 'B',
+            FLAGS_FILE => 'F',
+            FLAGS_ANON => 'A',
+            FLAGS_ANON_THP => 'T',
+            FLAGS_NONE => 'N',
+            FLAGS_PINNED => 'P',
+            _ => '?',
+        };
+        write!(f, "{ty}{}", self.order)
     }
 }
 
