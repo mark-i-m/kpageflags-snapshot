@@ -18,7 +18,7 @@ use crate::Args;
 pub const MAX_ORDER: u64 = 10;
 
 /// The  granularity with which probabilities are expressed in MPs.
-pub const MP_GRANULARITY: f64 = 100.0;
+pub const MP_GRANULARITY: f64 = 1000.0;
 
 #[derive(Copy, Clone, Debug)]
 pub struct CombinedPageFlags<K: Flaggy> {
