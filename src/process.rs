@@ -730,6 +730,28 @@ pub fn markov<R: Read, K: Flaggy>(
     // Make the MP a bit easier to simulate.
     mp.cleanup_mp();
 
+    /*
+    {
+        for node in 0..mp.p.nrows() {
+            println!("Node {node} {}", mp.labels[node]);
+            print!("Incoming:");
+            for i in 0..mp.p.nrows() {
+                if mp.p[(i, node)] > f64::EPSILON {
+                    print!(" {i}({:0.3})", mp.p[(i, node)]);
+                }
+            }
+            println!();
+            print!("Outgoing:");
+            for i in 0..mp.p.nrows() {
+                if mp.p[(node, i)] > f64::EPSILON {
+                    print!(" {i}({:0.3})", mp.p[(node, i)]);
+                }
+            }
+            println!();
+        }
+    }
+    */
+
     // Print the MP.
     for (i, fa) in mp.labels().enumerate() {
         print!("{} {:x}", fa.order, fa.flags);
