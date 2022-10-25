@@ -8,7 +8,10 @@ use std::{
     io::{self, Read},
 };
 
-use encyclopagia::kpageflags::{Flaggy, KPageFlags, KPageFlagsIterator, KPageFlagsReader};
+use encyclopagia::{
+    kpageflags::{Flaggy, KPageFlags, KPageFlagsIterator, KPageFlagsReader},
+    FileReadableReader,
+};
 use hdrhistogram::Histogram;
 use nalgebra::{DMatrix, DVector};
 
@@ -255,12 +258,30 @@ where
     }
 }
 
-const FLAGS_BUDDY: u64 = 1 << 0;
-const FLAGS_FILE: u64 = 1 << 1;
-const FLAGS_ANON: u64 = 1 << 2;
-const FLAGS_ANON_THP: u64 = 1 << 3;
-const FLAGS_NONE: u64 = 1 << 4;
-const FLAGS_PINNED: u64 = 1 << 5;
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[repr(u64)]
+pub enum GFPFlags {
+    Buddy = 1 << 0,
+    File = 1 << 1,
+    Anon = 1 << 2,
+    AnonThp = 1 << 3,
+    None = 1 << 4,
+    Pinned = 1 << 5,
+}
+
+impl Display for GFPFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ty = match self {
+            GFPFlags::Buddy => 'B',
+            GFPFlags::File => 'F',
+            GFPFlags::Anon => 'A',
+            GFPFlags::AnonThp => 'T',
+            GFPFlags::None => 'N',
+            GFPFlags::Pinned => 'P',
+        };
+        write!(f, "{ty}")
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 struct CombinedGFPRegion {
@@ -268,7 +289,7 @@ struct CombinedGFPRegion {
     pub order: u64,
 
     /// GFP for the given region.
-    pub flags: u64,
+    pub flags: GFPFlags,
 }
 
 impl Ord for CombinedGFPRegion {
@@ -306,20 +327,12 @@ impl Hash for CombinedGFPRegion {
 
 impl Display for CombinedGFPRegion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let ty = match self.flags {
-            FLAGS_BUDDY => 'B',
-            FLAGS_FILE => 'F',
-            FLAGS_ANON => 'A',
-            FLAGS_ANON_THP => 'T',
-            FLAGS_NONE => 'N',
-            FLAGS_PINNED => 'P',
-            _ => '?',
-        };
-        write!(f, "{ty}{}", self.order)
+        write!(f, "{}{}", self.flags, self.order)
     }
 }
 
 /// Get the log (base 2) of `x`. `x` must be a power of two.
+#[allow(dead_code)]
 fn log2(x: u64) -> u64 {
     // Optimize the most common values we will get, then just do the computation.
     match x {
@@ -351,31 +364,73 @@ fn log2(x: u64) -> u64 {
     }
 }
 
-pub fn kpf_to_abstract_flags<K: Flaggy>(flags: KPageFlags<K>) -> u64 {
+pub fn kpf_to_abstract_flags<K: Flaggy>(flags: KPageFlags<K>) -> GFPFlags {
     // Kernel memory.
     if flags.all(K::SLAB) {
-        FLAGS_PINNED
+        GFPFlags::Pinned
     } else if K::PGTABLE.is_some() && flags.all(K::PGTABLE.unwrap()) {
-        FLAGS_PINNED
+        GFPFlags::Pinned
     }
     // Free pages.
     else if flags.all(K::BUDDY) {
-        FLAGS_BUDDY
+        GFPFlags::Buddy
     }
     // Anonymous memory.
     else if flags.all(K::ANON | K::THP) {
-        FLAGS_ANON_THP
+        GFPFlags::AnonThp
     } else if flags.all(K::ANON) {
-        FLAGS_ANON
+        GFPFlags::Anon
     }
     // File cache.
     else if flags.all(K::LRU) {
-        FLAGS_FILE
+        GFPFlags::File
     }
     // No flags... VM balloon drivers, IO buffers, etc.
     else {
-        FLAGS_NONE
+        GFPFlags::None
     }
+}
+
+/// Given a size `size`, break into the longest set of power-of-2-sized chunks less than
+/// `MAX_ORDER` as possible.
+fn break_into_pow_of_2_regions(size: u64) -> Vec<u64> {
+    // The set of orders we want is already represented in the binary representation of `size`.
+
+    const MAX_ORDER_MAX_LO: u64 = (1 << MAX_ORDER) - 1;
+    const MAX_ORDER_MAX_HI: u64 = !MAX_ORDER_MAX_LO;
+
+    let n_max_order = ((size & MAX_ORDER_MAX_HI) >> MAX_ORDER) as usize;
+
+    let mut regions = vec![MAX_ORDER; n_max_order];
+
+    for o in 0..(MAX_ORDER) {
+        if size & (1 << o) != 0 {
+            regions.push(o);
+        }
+    }
+
+    regions
+}
+
+fn combine_and_clean_flags<K: Flaggy>(
+    reader: FileReadableReader<impl Read, KPageFlags<K>>,
+    ignored_flags: &[K],
+    simulated_flags: bool,
+) -> impl Iterator<Item = CombinedGFPRegion> {
+    KPageFlagsProcessor::new(
+        KPageFlagsIterator::new(reader, ignored_flags),
+        simulated_flags,
+    )
+    .filter(|combined| !combined.flags.any(K::NOPAGE))
+    .filter(|combined| !combined.flags.any(K::RESERVED))
+    .flat_map(|combined| {
+        break_into_pow_of_2_regions(combined.end - combined.start)
+            .into_iter()
+            .map(move |order| CombinedGFPRegion {
+                order,
+                flags: kpf_to_abstract_flags(combined.flags),
+            })
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -663,7 +718,13 @@ fn mp_test() {
     {
         let mut mp = MarkovProcess {
             p: DMatrix::from_row_slice(3, 3, &[0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5]),
-            labels: vec![CombinedGFPRegion { order: 0, flags: 0 }; 3],
+            labels: vec![
+                CombinedGFPRegion {
+                    order: 0,
+                    flags: GFPFlags::None
+                };
+                3
+            ],
         };
 
         mp.cleanup_mp();
@@ -684,7 +745,13 @@ fn mp_test() {
     {
         let mut mp = MarkovProcess {
             p: DMatrix::from_row_slice(3, 3, &[0.0, 0.5, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
-            labels: vec![CombinedGFPRegion { order: 0, flags: 0 }; 3],
+            labels: vec![
+                CombinedGFPRegion {
+                    order: 0,
+                    flags: GFPFlags::None
+                };
+                3
+            ],
         };
         mp.cleanup_mp();
 
@@ -707,19 +774,13 @@ pub fn markov<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     simulated_flags: bool,
     simplify_mp: usize,
+    print_p: bool,
 ) -> io::Result<()> {
-    let flags = PairIterator::new(
-        KPageFlagsProcessor::new(
-            KPageFlagsIterator::new(reader, ignored_flags),
-            simulated_flags,
-        )
-        .filter(|combined| !combined.flags.any(K::NOPAGE))
-        .filter(|combined| !combined.flags.any(K::RESERVED))
-        .map(|combined| CombinedGFPRegion {
-            order: log2((combined.end - combined.start).next_power_of_two()),
-            flags: kpf_to_abstract_flags(combined.flags),
-        }),
-    );
+    let flags = PairIterator::new(combine_and_clean_flags(
+        reader,
+        ignored_flags,
+        simulated_flags,
+    ));
 
     let mut mp = MarkovProcess::construct(flags);
 
@@ -754,7 +815,7 @@ pub fn markov<R: Read, K: Flaggy>(
 
     // Print the MP.
     for (i, fa) in mp.labels().enumerate() {
-        print!("{} {:x}", fa.order, fa.flags);
+        print!("{} {:x}", fa.order, fa.flags as u64);
         for (j, _fb) in mp.labels().enumerate() {
             let prob = mp.p()[(i, j)];
             if prob >= 1.0 / MP_GRANULARITY {
@@ -770,7 +831,7 @@ pub fn markov<R: Read, K: Flaggy>(
     print!("Stationary Distribution:");
     for (f, pi) in mp.labels().zip(stationary.iter()) {
         if *pi >= 1.0 / MP_GRANULARITY {
-            print!(" {:x}:{}:{pi:0.2}", f.flags, f.order);
+            print!(" {:x}:{}:{pi:0.3}", f.flags as u64, f.order);
         }
     }
     println!();
@@ -783,16 +844,7 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     simulated_flags: bool,
 ) -> io::Result<()> {
-    let flags = KPageFlagsProcessor::new(
-        KPageFlagsIterator::new(reader, ignored_flags),
-        simulated_flags,
-    )
-    .filter(|combined| !combined.flags.any(K::NOPAGE))
-    .filter(|combined| !combined.flags.any(K::RESERVED))
-    .map(|combined| CombinedGFPRegion {
-        order: log2((combined.end - combined.start).next_power_of_two()),
-        flags: kpf_to_abstract_flags(combined.flags),
-    });
+    let flags = combine_and_clean_flags(reader, ignored_flags, simulated_flags);
     let mut stats = BTreeMap::new();
     let mut total = 0.0;
 
@@ -810,7 +862,7 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     for (flags, orders) in stats.into_iter() {
         for o in 0..orders.len() {
             if orders[o] / total >= 1.0 / MP_GRANULARITY {
-                print!(" {flags:x}:{o}:{:0.2}", orders[o] / total);
+                print!(" {:x}:{o}:{:0.3}", flags as u64, orders[o] / total);
             }
         }
     }
@@ -823,10 +875,7 @@ pub fn type_dists<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     simulated_flags: bool,
 ) -> io::Result<()> {
-    let flags = KPageFlagsProcessor::new(
-        KPageFlagsIterator::new(reader, ignored_flags),
-        simulated_flags,
-    );
+    let flags = combine_and_clean_flags(reader, ignored_flags, simulated_flags);
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
@@ -834,8 +883,7 @@ pub fn type_dists<R: Read, K: Flaggy>(
         let orders = stats
             .entry(region.flags)
             .or_insert_with(|| [0; MAX_ORDER as usize + 1]);
-        let order = log2((region.end - region.start).next_power_of_two()) as usize;
-        orders[order] += 1;
+        orders[region.order as usize] += 1;
     }
 
     // Print some stats about the different types of page usage.
