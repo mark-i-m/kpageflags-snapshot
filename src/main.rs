@@ -55,6 +55,10 @@ pub struct Args {
     #[clap(long)]
     markov: bool,
 
+    /// Print the transition probability matrix of the MP.
+    #[clap(long, requires("markov"))]
+    print_p: bool,
+
     /// Simplify the MP by culling edges with a transition probability less than the parameter. The
     /// value should be an integer between 1 and `MP_GRANULARITY`. The default is 1 because that is
     /// the smallest probability representable by the MP format.
@@ -170,6 +174,7 @@ where
             &ignored_flags,
             args.simulated_flags,
             args.simplify_mp,
+            args.print_p,
         )?;
     }
     if args.dist {

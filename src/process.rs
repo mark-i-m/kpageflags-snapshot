@@ -813,6 +813,16 @@ pub fn markov<R: Read, K: Flaggy>(
     }
     */
 
+    // Print P.
+    if print_p {
+        for (i, _fa) in mp.labels().enumerate() {
+            for (j, _fb) in mp.labels().enumerate() {
+                print!("{} ", mp.p()[(i, j)]);
+            }
+            println!();
+        }
+    }
+
     // Print the MP.
     for (i, fa) in mp.labels().enumerate() {
         print!("{} {:x}", fa.order, fa.flags as u64);
@@ -887,12 +897,36 @@ pub fn type_dists<R: Read, K: Flaggy>(
     }
 
     // Print some stats about the different types of page usage.
+    println!("Region type/size counts\n==========");
+    let mut subtotals = Vec::new();
+    for (flags, orders) in stats.iter() {
+        for o in orders.iter() {
+            print!("{o:8} ");
+        }
+        let sub = orders.iter().sum::<usize>();
+        println!("{flags:4} {sub:8}");
+        subtotals.push(sub);
+    }
+    println!(
+        "Total region count: {}",
+        subtotals.into_iter().sum::<usize>()
+    );
+
+    println!("\nMemory Amounts (pages)\n==========");
+    let mut subtotals = Vec::new();
     for (flags, orders) in stats.into_iter() {
         for o in 0..orders.len() {
-            print!("{} ", orders[o] << o);
+            print!("{:8} ", orders[o] << o);
         }
-        println!("{flags}");
+        let sub = orders
+            .iter()
+            .enumerate()
+            .map(|(o, n)| n << o)
+            .sum::<usize>();
+        println!("{flags:4} {sub:8}");
+        subtotals.push(sub);
     }
+    println!("Total memory: {}", subtotals.into_iter().sum::<usize>());
 
     Ok(())
 }
