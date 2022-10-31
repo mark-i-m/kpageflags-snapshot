@@ -23,6 +23,9 @@ pub const MAX_ORDER: u64 = 10;
 /// The  granularity with which probabilities are expressed in MPs.
 pub const MP_GRANULARITY: f64 = 1000.0;
 
+/// The number of steps of history to use.
+pub const MP_HISTORY_LEN: usize = 2;
+
 #[derive(Copy, Clone, Debug)]
 pub struct CombinedPageFlags<K: Flaggy> {
     /// Starting PFN (inclusive).
@@ -495,7 +498,7 @@ enum Reachability {
 }
 
 /// Represents a Markov Process with the ability to cull unlikely states and check irreducibility.
-struct MarkovProcess {
+struct MarkovProcess<L> {
     // The main representation of the process is via the transition probability matrix. The matrix
     // shows the weight of each transition. We also keep a list of labels corresponding to the
     // different indices of the matrix. Both the label list and the matrix are in the same order.
@@ -504,12 +507,15 @@ struct MarkovProcess {
     p: DMatrix<f64>,
 
     /// Node labels.
-    labels: Vec<CombinedGFPRegion>,
+    labels: Vec<L>,
 }
 
-impl MarkovProcess {
+impl<L> MarkovProcess<L>
+where
+    L: Clone + Ord,
+{
     /// Construct a MP from the given iterator.
-    pub fn construct(flags: impl Iterator<Item = (CombinedGFPRegion, CombinedGFPRegion)>) -> Self {
+    pub fn construct(flags: impl Iterator<Item = (L, L)>) -> Self {
         // graph[a][b] = number of edges from a -> b in the graph.
         let mut graph = BTreeMap::new();
         for (fa, fb) in flags {
@@ -517,7 +523,7 @@ impl MarkovProcess {
             *graph
                 .entry(fa)
                 .or_insert_with(BTreeMap::new)
-                .entry(fb)
+                .entry(fb.clone())
                 .or_insert(0.0) += 1.0;
 
             // And make sure both nodes are in the graph.
@@ -772,7 +778,7 @@ impl MarkovProcess {
         &self.p
     }
 
-    pub fn labels(&self) -> impl Iterator<Item = &CombinedGFPRegion> {
+    pub fn labels(&self) -> impl Iterator<Item = &L> {
         self.labels.iter()
     }
 }
@@ -836,6 +842,19 @@ fn mp_test() {
     }
 }
 
+fn mp_label_fmt(label: &[CombinedGFPRegion]) -> String {
+    let mut s = String::new();
+
+    for (i, f) in label.iter().enumerate() {
+        if i > 0 {
+            s.push('|');
+        }
+        s.push_str(&format!("{}|{:x}", f.order, f.flags as u64));
+    }
+
+    s
+}
+
 pub fn markov<R: Read, K: Flaggy>(
     reader: KPageFlagsReader<R, K>,
     ignored_flags: &[K],
@@ -843,10 +862,8 @@ pub fn markov<R: Read, K: Flaggy>(
     simplify_mp: usize,
     print_p: bool,
 ) -> io::Result<()> {
-    let flags = PairIterator::new(combine_and_clean_flags(
-        reader,
-        ignored_flags,
-        simulated_flags,
+    let flags = PairIterator::new(WindowIterator::<_, MP_HISTORY_LEN>::new(
+        combine_and_clean_flags(reader, ignored_flags, simulated_flags),
     ));
 
     let mut mp = MarkovProcess::construct(flags);
@@ -892,7 +909,7 @@ pub fn markov<R: Read, K: Flaggy>(
 
     // Print the MP.
     for (i, fa) in mp.labels().enumerate() {
-        print!("{} {:x}", fa.order, fa.flags as u64);
+        print!("{}", mp_label_fmt(fa));
         for (j, _fb) in mp.labels().enumerate() {
             let prob = mp.p()[(i, j)];
             if prob >= 1.0 / MP_GRANULARITY {
@@ -908,7 +925,7 @@ pub fn markov<R: Read, K: Flaggy>(
     print!("Stationary Distribution:");
     for (f, pi) in mp.labels().zip(stationary.iter()) {
         if *pi >= 1.0 / MP_GRANULARITY {
-            print!(" {:x}:{}:{pi:0.3}", f.flags as u64, f.order);
+            print!(" {}:{pi:0.3}", mp_label_fmt(f));
         }
     }
     println!();
