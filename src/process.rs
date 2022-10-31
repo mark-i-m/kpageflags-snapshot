@@ -938,26 +938,23 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     simulated_flags: bool,
 ) -> io::Result<()> {
-    let flags = combine_and_clean_flags(reader, ignored_flags, simulated_flags);
+    let flags = WindowIterator::<_, MP_HISTORY_LEN>::new(combine_and_clean_flags(
+        reader,
+        ignored_flags,
+        simulated_flags,
+    ));
     let mut stats = BTreeMap::new();
     let mut total = 0.0;
 
-    // Iterate over contiguous physical memory regions with similar properties.
     for region in flags {
-        let orders = stats
-            .entry(region.flags)
-            .or_insert_with(|| [0.0; MAX_ORDER as usize + 1]);
-        orders[region.order as usize] += 1.0;
+        *stats.entry(region).or_insert(0.0) += 1.0;
         total += 1.0;
     }
 
-    // Print some stats about the different types of page usage.
     print!("Empirical Distribution:");
-    for (flags, orders) in stats.into_iter() {
-        for o in 0..orders.len() {
-            if orders[o] / total >= 1.0 / MP_GRANULARITY {
-                print!(" {:x}:{o}:{:0.3}", flags as u64, orders[o] / total);
-            }
+    for (region, count) in stats.into_iter() {
+        if count / total >= 1.0 / MP_GRANULARITY {
+            print!(" {}:{:0.3}", mp_label_fmt(&region), count / total);
         }
     }
 
