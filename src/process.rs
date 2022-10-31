@@ -559,32 +559,44 @@ impl MarkovProcess {
     /// reachable from itself unless it has a self-loop.
     ///
     /// Returns `reachability[i][j] := i~~>j`.
-    ///
-    /// The current implementation is O(n^4), but it probably doesn't matter.
     fn reachability(&self) -> Vec<Vec<Reachability>> {
+        let mut reachable_sets = Vec::with_capacity(self.p.nrows());
+        for from in 0..self.p.nrows() {
+            reachable_sets.push(BTreeSet::new());
+            for to in 0..self.p.ncols() {
+                if self.p[(from, to)] > f64::EPSILON {
+                    reachable_sets[from].insert(to);
+                }
+            }
+        }
+
+        loop {
+            let mut changed = false;
+
+            for from in 0..self.p.nrows() {
+                let mut new_reachable = BTreeSet::new();
+                for &to in reachable_sets[from].iter() {
+                    new_reachable.extend(&reachable_sets[to] - &reachable_sets[from]);
+                }
+                if !new_reachable.is_empty() {
+                    changed = true;
+                }
+                reachable_sets[from].append(&mut new_reachable); // empties new_reachable
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
         // reachability[i][j] := i~~>j... a node is not self-reachable unless it has a self-loop or
         // it can reach another node that can reach it.
         let mut reachability: Vec<Vec<_>> =
             vec![vec![Reachability::Unreachable; self.p.ncols()]; self.p.nrows()];
-
-        // BFS
         for from in 0..self.p.nrows() {
             for to in 0..self.p.ncols() {
-                if self.p[(from, to)] > f64::EPSILON {
+                if reachable_sets[from].contains(&to) {
                     reachability[from][to] = Reachability::Reachable;
-                }
-            }
-        }
-        for _ in 0..self.p.nrows() {
-            for from in 0..self.p.nrows() {
-                for mid in 0..self.p.ncols() {
-                    for to in 0..self.p.ncols() {
-                        if reachability[from][mid] == Reachability::Reachable
-                            && reachability[mid][to] == Reachability::Reachable
-                        {
-                            reachability[from][to] = Reachability::Reachable;
-                        }
-                    }
                 }
             }
         }
