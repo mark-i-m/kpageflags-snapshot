@@ -2,7 +2,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Display,
     hash::Hash,
     io::{self, Read},
@@ -218,6 +218,61 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
     }
 
     Ok(())
+}
+
+/// An iterator that returns a sliding window over `N` elements.
+struct WindowIterator<I, const N: usize>
+where
+    I: Iterator,
+    <I as Iterator>::Item: Clone,
+{
+    iter: I,
+    window: VecDeque<<I as Iterator>::Item>,
+}
+
+impl<I, const N: usize> WindowIterator<I, N>
+where
+    I: Iterator,
+    <I as Iterator>::Item: Clone,
+{
+    pub fn new(mut iter: I) -> Self {
+        assert!(N > 0);
+
+        let mut window = VecDeque::with_capacity(N);
+        for _ in 0..N {
+            if let Some(v) = iter.next() {
+                window.push_back(v);
+            }
+        }
+        Self { iter, window }
+    }
+}
+
+impl<I, const N: usize> Iterator for WindowIterator<I, N>
+where
+    I: Iterator,
+    <I as Iterator>::Item: Clone + std::fmt::Debug,
+{
+    type Item = [<I as Iterator>::Item; N];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.window.len() == N {
+            let ret = self
+                .window
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap();
+            self.window.pop_front();
+            if let Some(next) = self.iter.next() {
+                self.window.push_back(next);
+            }
+            Some(ret)
+        } else {
+            None
+        }
+    }
 }
 
 /// An iterator that returns (current, next) for all items in the stream.
