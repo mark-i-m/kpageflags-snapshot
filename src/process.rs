@@ -2,7 +2,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     fmt::Display,
     hash::Hash,
     io::{self, Read},
@@ -15,16 +15,19 @@ use encyclopagia::{
 use hdrhistogram::Histogram;
 use nalgebra::{DMatrix, DVector};
 
-use crate::Args;
+use crate::{util::*, Args};
 
 /// The `MAX_ORDER` for Linux 5.17 (and a lot of older versions).
 pub const MAX_ORDER: u64 = 10;
 
+/// The number of 4KB pages in a `MAX_ORDER`-sized chunk of memory.
+pub const MAX_ORDER_PAGES: u64 = 1 << MAX_ORDER;
+
 /// The  granularity with which probabilities are expressed in MPs.
-pub const MP_GRANULARITY: f64 = 1000.0;
+pub const MP_GRANULARITY: f64 = 1E3;
 
 /// The number of steps of history to use.
-pub const MP_HISTORY_LEN: usize = 2;
+pub const MP_HISTORY_LEN: usize = 1;
 
 #[derive(Copy, Clone, Debug)]
 pub struct CombinedPageFlags<K: Flaggy> {
@@ -37,119 +40,28 @@ pub struct CombinedPageFlags<K: Flaggy> {
     pub flags: KPageFlags<K>,
 }
 
-impl<K: Flaggy> Hash for CombinedPageFlags<K> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Hash size and flags.
-        (self.end - self.start).hash(state);
-        self.flags.hash(state);
+impl<K: Flaggy> CombinedPageFlags<K> {
+    pub fn len(&self) -> u64 {
+        self.end - self.start
     }
 }
 
-/// Consumes an iterator over flags and transforms it to combine various elements and simplify
-/// flags. This makes the stream a bit easier to plot and produce a markov process from.
-pub struct KPageFlagsProcessor<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> {
-    flags: std::iter::Peekable<std::iter::Enumerate<I>>,
-    simulated_flags: bool,
-}
-
-impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> KPageFlagsProcessor<K, I> {
-    pub fn new(iter: I, simulated_flags: bool) -> Self {
-        Self {
-            flags: iter.enumerate().peekable(),
-            simulated_flags,
-        }
+impl<K: Flaggy> Combinable for CombinedPageFlags<K> {
+    fn combinable(a: &[Self], b: &Self) -> bool {
+        let total_len: u64 = a.iter().map(|r| r.len()).sum();
+        let ty = a[0].flags;
+        (total_len + b.len()) < MAX_ORDER_PAGES && KPageFlags::can_combine(ty, b.flags)
     }
-}
 
-impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsProcessor<K, I> {
-    type Item = CombinedPageFlags<K>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // Start with whatever the next flags are.
-        let mut combined = {
-            let (start, flags) = if let Some((start, flags)) = self.flags.next() {
-                (start as u64, flags)
-            } else {
-                return None;
-            };
-
-            CombinedPageFlags {
-                start,
-                end: start + 1,
-                flags,
-            }
-        };
-
-        // Look ahead 1 element to see if we break the run...
-        while let Some((_, next_flags)) = self.flags.peek() {
-            // If this element can be combined with `combined`, combine it.
-            // We want to limit the max size of a chunk to `MAX_ORDER`.
-            if (combined.end - combined.start) < (1 << MAX_ORDER)
-                && KPageFlags::can_combine(combined.flags, *next_flags)
-            {
-                let (pfn, flags) = self.flags.next().unwrap();
-                combined.end = pfn as u64 + 1; // exclusive
-                combined.flags |= flags;
-            }
-            // Otherwise, end the run and return here.
-            else {
-                break;
-            }
-        }
-
-        if self.simulated_flags && combined.flags.all(K::OWNERPRIVATE1 | K::RESERVED) {
-            combined.flags.clear(K::OWNERPRIVATE1 | K::RESERVED);
-
-            // Anon THP pages.
-            if combined.flags.all(K::PRIVATE | K::PRIVATE2) {
-                combined.flags.clear(K::PRIVATE | K::PRIVATE2);
-                combined.flags |= KPageFlags::from(K::ANON | K::THP);
-            }
-            // Anon pages.
-            else if combined.flags.all(K::PRIVATE) {
-                combined.flags.clear(K::PRIVATE);
-                combined.flags |= KPageFlags::from(K::ANON);
-            }
-            // File pages.
-            else if combined.flags.all(K::LRU) {
-                // Nothing to do...
-            }
-            // Private 2 without Private Cannot happen!
-            else if combined.flags.all(K::PRIVATE2) {
-                unreachable!();
-            }
-            // Pinned pages.
-            else {
-                combined.flags |= KPageFlags::from(K::SLAB);
-            }
-        }
-
-        Some(combined)
-    }
-}
-
-/// Consumes a collection of iterators over flags in lockstep. In each call to `next`, it calls
-/// `next` on each of the sub-iterators and returns an array with the returned values.
-pub struct KPageFlagsLockstep<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> {
-    iters: Vec<I>,
-}
-
-impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> KPageFlagsLockstep<K, I> {
-    pub fn new(iters: Vec<I>) -> Self {
-        KPageFlagsLockstep { iters }
-    }
-}
-
-impl<K: Flaggy, I: Iterator<Item = KPageFlags<K>>> Iterator for KPageFlagsLockstep<K, I> {
-    type Item = Vec<Option<I::Item>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let out: Vec<Option<I::Item>> = self.iters.iter_mut().map(|i| i.next()).collect();
-
-        if out.iter().all(Option::is_none) {
-            None
-        } else {
-            Some(out)
+    fn combine(vals: &[Self]) -> Self {
+        CombinedPageFlags {
+            start: vals.iter().map(|cpf| cpf.start).min().unwrap(),
+            end: vals.iter().map(|cpf| cpf.end).max().unwrap(),
+            flags: vals
+                .iter()
+                .map(|cpf| cpf.flags)
+                .reduce(|a, b| a | b)
+                .unwrap(),
         }
     }
 }
@@ -159,10 +71,7 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     args: &Args,
 ) -> io::Result<()> {
-    let flags = KPageFlagsProcessor::new(
-        KPageFlagsIterator::new(reader, ignored_flags),
-        args.simulated_flags,
-    );
+    let flags = clean_flags(reader, ignored_flags, args.simulated_flags);
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
@@ -176,7 +85,7 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
                     region.start, 4, region.flags
                 );
             } else {
-                let size = (region.end - region.start) * 4;
+                let size = region.len() * 4;
                 println!(
                     "{:010X}-{:010X} {:8}KB {}",
                     region.start, region.end, size, region.flags,
@@ -188,8 +97,8 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
             .entry(region.flags)
             .or_insert_with(|| (0, Histogram::<u64>::new(5).unwrap()));
 
-        *total += region.end - region.start;
-        stats.record(region.end - region.start).unwrap();
+        *total += region.len();
+        stats.record(region.len()).unwrap();
     }
 
     // Print some stats about the different types of page usage.
@@ -223,99 +132,6 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
     Ok(())
 }
 
-/// An iterator that returns a sliding window over `N` elements.
-struct WindowIterator<I, const N: usize>
-where
-    I: Iterator,
-    <I as Iterator>::Item: Clone,
-{
-    iter: I,
-    window: VecDeque<<I as Iterator>::Item>,
-}
-
-impl<I, const N: usize> WindowIterator<I, N>
-where
-    I: Iterator,
-    <I as Iterator>::Item: Clone,
-{
-    pub fn new(mut iter: I) -> Self {
-        assert!(N > 0);
-
-        let mut window = VecDeque::with_capacity(N);
-        for _ in 0..N {
-            if let Some(v) = iter.next() {
-                window.push_back(v);
-            }
-        }
-        Self { iter, window }
-    }
-}
-
-impl<I, const N: usize> Iterator for WindowIterator<I, N>
-where
-    I: Iterator,
-    <I as Iterator>::Item: Clone + std::fmt::Debug,
-{
-    type Item = [<I as Iterator>::Item; N];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.window.len() == N {
-            let ret = self
-                .window
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .try_into()
-                .unwrap();
-            self.window.pop_front();
-            if let Some(next) = self.iter.next() {
-                self.window.push_back(next);
-            }
-            Some(ret)
-        } else {
-            None
-        }
-    }
-}
-
-/// An iterator that returns (current, next) for all items in the stream.
-struct PairIterator<I>
-where
-    I: Iterator,
-    <I as Iterator>::Item: Clone,
-{
-    iter: I,
-    prev: Option<<I as Iterator>::Item>,
-}
-
-impl<I> PairIterator<I>
-where
-    I: Iterator,
-    <I as Iterator>::Item: Clone,
-{
-    pub fn new(mut iter: I) -> Self {
-        let prev = iter.next();
-        Self { iter, prev }
-    }
-}
-
-impl<I> Iterator for PairIterator<I>
-where
-    I: Iterator,
-    <I as Iterator>::Item: Clone,
-{
-    type Item = (<I as Iterator>::Item, <I as Iterator>::Item);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let (Some(prev), Some(curr)) = (self.prev.take(), self.iter.next()) {
-            self.prev = Some(curr.clone());
-            Some((prev, curr))
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(u64)]
 pub enum GFPFlags {
@@ -343,8 +159,8 @@ impl Display for GFPFlags {
 
 #[derive(Copy, Clone, Debug)]
 struct CombinedGFPRegion {
-    /// Order of allocation.
-    pub order: u64,
+    /// The size of the allocation in number of 4KB pages.
+    pub npages: u64,
 
     /// GFP for the given region.
     pub flags: GFPFlags,
@@ -353,10 +169,10 @@ struct CombinedGFPRegion {
 impl Ord for CombinedGFPRegion {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let flagscmp = Ord::cmp(&self.flags, &other.flags);
-        let ordercmp = Ord::cmp(&self.order, &other.order);
+        let npagescmp = Ord::cmp(&self.npages, &other.npages);
 
         if flagscmp == Ordering::Equal {
-            ordercmp
+            npagescmp
         } else {
             flagscmp
         }
@@ -378,47 +194,37 @@ impl Eq for CombinedGFPRegion {}
 impl Hash for CombinedGFPRegion {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Hash size and flags.
-        self.order.hash(state);
+        self.npages.hash(state);
         self.flags.hash(state);
     }
 }
 
 impl Display for CombinedGFPRegion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.flags, self.order)
+        write!(f, "{}{}", self.flags, self.npages)
     }
 }
 
-/// Get the log (base 2) of `x`. `x` must be a power of two.
-#[allow(dead_code)]
-fn log2(x: u64) -> u64 {
-    // Optimize the most common values we will get, then just do the computation.
-    match x {
-        1 => 0,
-        2 => 1,
-        4 => 2,
-        8 => 3,
-        16 => 4,
-        32 => 5,
-        64 => 6,
-        128 => 7,
-        256 => 8,
-        512 => 9,
-        1024 => 10,
-        2048 => 11,
-        4096 => 12,
-        9182 => 13,
-        other if other.is_power_of_two() => {
-            for i in 0.. {
-                if other >> i == 1 {
-                    return i;
-                }
-            }
+impl MarkovLabel for CombinedGFPRegion {
+    fn ty(&self) -> u64 {
+        self.flags as u64
+    }
+    fn npages(&self) -> u64 {
+        self.npages
+    }
+}
 
-            unreachable!()
+impl Combinable for CombinedGFPRegion {
+    fn combinable(a: &[Self], b: &Self) -> bool {
+        let total_len: u64 = a.iter().map(|r| r.npages).sum();
+        a[0].flags == b.flags && (total_len + b.npages) < MAX_ORDER_PAGES
+    }
+
+    fn combine(vals: &[Self]) -> Self {
+        CombinedGFPRegion {
+            npages: vals.iter().map(|cgfpr| cgfpr.npages).sum(),
+            flags: vals[0].flags,
         }
-
-        _ => panic!(),
     }
 }
 
@@ -451,10 +257,11 @@ pub fn kpf_to_abstract_flags<K: Flaggy>(flags: KPageFlags<K>) -> GFPFlags {
 
 /// Given a size `size`, break into the longest set of power-of-2-sized chunks less than
 /// `MAX_ORDER` as possible.
+#[allow(dead_code)]
 fn break_into_pow_of_2_regions(size: u64) -> Vec<u64> {
     // The set of orders we want is already represented in the binary representation of `size`.
 
-    const MAX_ORDER_MAX_LO: u64 = (1 << MAX_ORDER) - 1;
+    const MAX_ORDER_MAX_LO: u64 = MAX_ORDER_PAGES - 1;
     const MAX_ORDER_MAX_HI: u64 = !MAX_ORDER_MAX_LO;
 
     let n_max_order = ((size & MAX_ORDER_MAX_HI) >> MAX_ORDER) as usize;
@@ -470,31 +277,100 @@ fn break_into_pow_of_2_regions(size: u64) -> Vec<u64> {
     regions
 }
 
-fn combine_and_clean_flags<K: Flaggy>(
+fn clean_flags<K: Flaggy>(
+    reader: FileReadableReader<impl Read, KPageFlags<K>>,
+    ignored_flags: &[K],
+    simulated_flags: bool,
+) -> impl Iterator<Item = CombinedPageFlags<K>> {
+    CombiningIterator::new(
+        KPageFlagsIterator::new(reader, ignored_flags)
+            .enumerate()
+            .map(|(i, flags)| CombinedPageFlags {
+                start: i as u64,
+                end: i as u64 + 1,
+                flags,
+            }),
+    )
+    .map(move |mut region| {
+        if simulated_flags && region.flags.all(K::OWNERPRIVATE1 | K::RESERVED) {
+            region.flags.clear(K::OWNERPRIVATE1 | K::RESERVED);
+
+            // Anon THP pages.
+            if region.flags.all(K::PRIVATE | K::PRIVATE2) {
+                region.flags.clear(K::PRIVATE | K::PRIVATE2);
+                region.flags |= KPageFlags::from(K::ANON | K::THP);
+            }
+            // Anon pages.
+            else if region.flags.all(K::PRIVATE) {
+                region.flags.clear(K::PRIVATE);
+                region.flags |= KPageFlags::from(K::ANON);
+            }
+            // File pages.
+            else if region.flags.all(K::LRU) {
+                // Nothing to do...
+            }
+            // Private 2 without Private Cannot happen!
+            else if region.flags.all(K::PRIVATE2) {
+                unreachable!();
+            }
+            // Pinned pages.
+            else {
+                region.flags |= KPageFlags::from(K::SLAB);
+            }
+        }
+
+        region
+    })
+}
+
+fn clean_and_combine_flags<K: Flaggy>(
     reader: FileReadableReader<impl Read, KPageFlags<K>>,
     ignored_flags: &[K],
     simulated_flags: bool,
 ) -> impl Iterator<Item = CombinedGFPRegion> {
-    KPageFlagsProcessor::new(
-        KPageFlagsIterator::new(reader, ignored_flags),
-        simulated_flags,
+    CombiningIterator::new(
+        clean_flags(reader, ignored_flags, simulated_flags)
+            .filter(|region| !region.flags.any(K::NOPAGE))
+            .filter(|region| !region.flags.any(K::RESERVED))
+            .map(|region| CombinedGFPRegion {
+                npages: region.len(),
+                flags: kpf_to_abstract_flags(region.flags),
+            }),
+        //.flat_map(|combined| {
+        //    break_into_pow_of_2_regions(combined.len())
+        //        .into_iter()
+        //        .map(move |order| CombinedGFPRegion {
+        //            order,
+        //            flags: kpf_to_abstract_flags(combined.flags),
+        //        })
+        //})
     )
-    .filter(|combined| !combined.flags.any(K::NOPAGE))
-    .filter(|combined| !combined.flags.any(K::RESERVED))
-    .flat_map(|combined| {
-        break_into_pow_of_2_regions(combined.end - combined.start)
-            .into_iter()
-            .map(move |order| CombinedGFPRegion {
-                order,
-                flags: kpf_to_abstract_flags(combined.flags),
-            })
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Reachability {
     Reachable,
     Unreachable,
+}
+
+trait MarkovLabel {
+    fn ty(&self) -> u64;
+    fn npages(&self) -> u64;
+}
+
+impl<L: MarkovLabel, const N: usize> MarkovLabel for [L; N] {
+    fn ty(&self) -> u64 {
+        if N == 0 {
+            panic!();
+        }
+        self.last().unwrap().ty()
+    }
+    fn npages(&self) -> u64 {
+        if N == 0 {
+            panic!();
+        }
+        self.last().unwrap().npages()
+    }
 }
 
 /// Represents a Markov Process with the ability to cull unlikely states and check irreducibility.
@@ -512,7 +388,7 @@ struct MarkovProcess<L> {
 
 impl<L> MarkovProcess<L>
 where
-    L: Clone + Ord,
+    L: std::fmt::Debug + Clone + Ord + MarkovLabel,
 {
     /// Construct a MP from the given iterator.
     pub fn construct(flags: impl Iterator<Item = (L, L)>) -> Self {
@@ -521,13 +397,17 @@ where
         for (fa, fb) in flags {
             // Add the edge...
             *graph
-                .entry(fa)
+                .entry(fa.clone())
                 .or_insert_with(BTreeMap::new)
                 .entry(fb.clone())
                 .or_insert(0.0) += 1.0;
 
             // And make sure both nodes are in the graph.
-            graph.entry(fb).or_insert_with(BTreeMap::new);
+            graph.entry(fb.clone()).or_insert_with(BTreeMap::new);
+
+            //if fa == fb {
+            //    println!("{fa:?} -> {fb:?}");
+            //}
         }
 
         // Compute a canonical ordered list of all nodes.
@@ -581,6 +461,8 @@ where
     /// their probabilities sum to 1 before any more edges are culled. `b` is removed if it has no
     /// incoming edges after culling `a->b`.
     pub fn cull_unlikely(&mut self, tol: f64) {
+        //let mut nremoved = 0;
+
         loop {
             // Remove at most one edge from each node that has probability < `tol`.
             let mut culled_nodes = Vec::new();
@@ -593,8 +475,11 @@ where
                 }
             }
 
+            //nremoved += culled_nodes.len();
+
             // If no edges were removed, we reached a fixed point.
             if culled_nodes.is_empty() {
+                //println!("Culled: {nremoved}");
                 return;
             };
 
@@ -721,6 +606,8 @@ where
             }
         }
 
+        //println!("Connected Components: {}", connected_components.len());
+
         // Given that the original MP was probably not disconnected, we can guess that the edges
         // that were removed must have been unlikely overall. So when we add edges back to connect
         // the MP, let's not make the new edges likely.
@@ -753,7 +640,9 @@ where
             let mut next = &limiting_approx * &self.p;
             loop {
                 let diff = (&next - (&limiting_approx)).norm();
-                if diff < 0.1 {
+                if diff.is_nan() {
+                    panic!("diff is NaN");
+                } else if diff < 0.1 {
                     break;
                 } else {
                     period += 1;
@@ -781,6 +670,48 @@ where
     pub fn labels(&self) -> impl Iterator<Item = &L> {
         self.labels.iter()
     }
+
+    #[allow(dead_code)]
+    pub fn remove_similar_neighborships(&mut self) {
+        let similar_labels = {
+            let mut similar_labels = self
+                .labels
+                .iter()
+                .map(|label| label.ty())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(|ty| (ty, Vec::new()))
+                .collect::<BTreeMap<_, _>>();
+
+            for (i, label) in self.labels.iter().enumerate() {
+                similar_labels.get_mut(&label.ty()).unwrap().push(i);
+            }
+
+            similar_labels
+        };
+
+        let mut completely_removed = Vec::new();
+        for (_ty, labelsi) in similar_labels.iter() {
+            for &labela in labelsi.iter() {
+                for &labelb in labelsi.iter() {
+                    if self.labels[labela].npages() < MAX_ORDER_PAGES
+                        && self.labels[labelb].npages() < MAX_ORDER_PAGES
+                    {
+                        self.p[(labela, labelb)] = 0.0;
+                    }
+                }
+                if self.p.row(labela).sum() < f64::EPSILON {
+                    completely_removed.push(labela);
+                }
+            }
+        }
+
+        self.remove_nodes(&completely_removed);
+
+        for fa in 0..self.p.nrows() {
+            self.renormalize_row(fa);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -793,7 +724,7 @@ fn mp_test() {
             p: DMatrix::from_row_slice(3, 3, &[0.0, 0.5, 0.5, 0.0, 0.5, 0.5, 0.0, 0.5, 0.5]),
             labels: vec![
                 CombinedGFPRegion {
-                    order: 0,
+                    npages: 1,
                     flags: GFPFlags::None
                 };
                 3
@@ -820,7 +751,7 @@ fn mp_test() {
             p: DMatrix::from_row_slice(3, 3, &[0.0, 0.5, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]),
             labels: vec![
                 CombinedGFPRegion {
-                    order: 0,
+                    npages: 1,
                     flags: GFPFlags::None
                 };
                 3
@@ -849,7 +780,7 @@ fn mp_label_fmt(label: &[CombinedGFPRegion]) -> String {
         if i > 0 {
             s.push('|');
         }
-        s.push_str(&format!("{}|{:x}", f.order, f.flags as u64));
+        s.push_str(&format!("{}|{:x}", f.npages, f.flags as u64));
     }
 
     s
@@ -863,7 +794,7 @@ pub fn markov<R: Read, K: Flaggy>(
     print_p: bool,
 ) -> io::Result<()> {
     let flags = PairIterator::new(WindowIterator::<_, MP_HISTORY_LEN>::new(
-        combine_and_clean_flags(reader, ignored_flags, simulated_flags),
+        clean_and_combine_flags(reader, ignored_flags, simulated_flags),
     ));
 
     let mut mp = MarkovProcess::construct(flags);
@@ -871,6 +802,9 @@ pub fn markov<R: Read, K: Flaggy>(
     // Remove edges and nodes that are too unlikely. By default, this is just nodes that have a
     // probability too small to be represented, but the user can also set the threshold higher.
     mp.cull_unlikely(simplify_mp as f64 / MP_GRANULARITY);
+
+    // Remove transitions to similar states.
+    //mp.remove_similar_neighborships();
 
     // Make the MP a bit easier to simulate.
     mp.cleanup_mp();
@@ -921,8 +855,8 @@ pub fn markov<R: Read, K: Flaggy>(
     println!();
 
     // Print the Stationary Dist.
-    let stationary = mp.stationary_dist();
     print!("Stationary Distribution:");
+    let stationary = mp.stationary_dist();
     for (f, pi) in mp.labels().zip(stationary.iter()) {
         if *pi >= 1.0 / MP_GRANULARITY {
             print!(" {}:{pi:0.3}", mp_label_fmt(f));
@@ -938,7 +872,7 @@ pub fn empirical_dist<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     simulated_flags: bool,
 ) -> io::Result<()> {
-    let flags = WindowIterator::<_, MP_HISTORY_LEN>::new(combine_and_clean_flags(
+    let flags = WindowIterator::<_, MP_HISTORY_LEN>::new(clean_and_combine_flags(
         reader,
         ignored_flags,
         simulated_flags,
@@ -966,25 +900,25 @@ pub fn type_dists<R: Read, K: Flaggy>(
     ignored_flags: &[K],
     simulated_flags: bool,
 ) -> io::Result<()> {
-    let flags = combine_and_clean_flags(reader, ignored_flags, simulated_flags);
+    let flags = clean_and_combine_flags(reader, ignored_flags, simulated_flags);
     let mut stats = BTreeMap::new();
 
     // Iterate over contiguous physical memory regions with similar properties.
+    let mut sizes = BTreeSet::new();
     for region in flags {
-        let orders = stats
-            .entry(region.flags)
-            .or_insert_with(|| [0; MAX_ORDER as usize + 1]);
-        orders[region.order as usize] += 1;
+        let npages = stats.entry(region.flags).or_insert_with(BTreeMap::new);
+        *npages.entry(region.npages as usize).or_insert(0) += 1;
+        sizes.insert(region.npages as usize);
     }
 
     // Print some stats about the different types of page usage.
     println!("Region type/size counts\n==========");
     let mut subtotals = Vec::new();
-    for (flags, orders) in stats.iter() {
-        for o in orders.iter() {
-            print!("{o:8} ");
+    for (flags, npages) in stats.iter() {
+        for o in sizes.iter() {
+            print!("{:8} ", npages.get(o).unwrap_or(&0));
         }
-        let sub = orders.iter().sum::<usize>();
+        let sub = npages.values().sum::<usize>();
         println!("{flags:4} {sub:8}");
         subtotals.push(sub);
     }
@@ -993,27 +927,27 @@ pub fn type_dists<R: Read, K: Flaggy>(
         subtotals.into_iter().sum::<usize>()
     );
 
-    println!("\nMemory Amounts (pages)\n==========");
-    let mut subtotals = Vec::new();
-    for (flags, orders) in stats.into_iter() {
-        for o in 0..orders.len() {
-            print!("{:8} ", orders[o] << o);
-        }
-        let sub = orders
-            .iter()
-            .enumerate()
-            .map(|(o, n)| n << o)
-            .sum::<usize>();
-        println!("{flags:4} {sub:8}");
-        subtotals.push(sub);
-    }
-    println!("Total memory: {}", subtotals.into_iter().sum::<usize>());
+    //println!("\nMemory Amounts (pages)\n==========");
+    //let mut subtotals = Vec::new();
+    //for (flags, orders) in stats.into_iter() {
+    //    for o in 0..orders.len() {
+    //        print!("{:8} ", orders[o] << o);
+    //    }
+    //    let sub = orders
+    //        .iter()
+    //        .enumerate()
+    //        .map(|(o, n)| n << o)
+    //        .sum::<usize>();
+    //    println!("{flags:4} {sub:8}");
+    //    subtotals.push(sub);
+    //}
+    //println!("Total memory: {}", subtotals.into_iter().sum::<usize>());
 
     Ok(())
 }
 
 pub fn compare_snapshots<K: Flaggy>(ignored_flags: &[K], args: &Args) -> io::Result<()> {
-    let snapshot_iterators = KPageFlagsLockstep::new(
+    let snapshot_iterators = LockstepIterator::new(
         args.compare
             .iter()
             .map(|fname| {

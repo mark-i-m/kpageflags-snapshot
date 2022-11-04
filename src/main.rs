@@ -16,6 +16,7 @@ use flate2::bufread::MultiGzDecoder;
 use process::{compare_snapshots, empirical_dist, map_and_summary, markov, type_dists};
 
 mod process;
+mod util;
 
 /// A program to process the contents of `/proc/kpageflags`.
 #[derive(Parser, Debug)]

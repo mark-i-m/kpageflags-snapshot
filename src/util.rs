@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 /// Types whose values are transitively combinable.
 pub trait Combinable: Sized {
     /// Can `a` and `b` be combined? Note: this property is transitive.
-    fn combinable(a: &Self, b: &Self) -> bool;
+    fn combinable(a: &[Self], b: &Self) -> bool;
 
     /// Combine the given list of values into one value.
     fn combine(vals: &[Self]) -> Self;
@@ -153,7 +153,7 @@ where
         let mut combined = vec![next];
 
         while let Some(next) = self.0.peek() {
-            if <I as Iterator>::Item::combinable(&combined[0], next) {
+            if <I as Iterator>::Item::combinable(&combined, next) {
                 combined.push(self.0.next().unwrap());
             } else {
                 break;
