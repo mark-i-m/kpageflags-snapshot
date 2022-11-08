@@ -50,7 +50,7 @@ impl<K: Flaggy> Combinable for CombinedPageFlags<K> {
     fn combinable(a: &[Self], b: &Self) -> bool {
         let total_len: u64 = a.iter().map(|r| r.len()).sum();
         let ty = a[0].flags;
-        (total_len + b.len()) < MAX_ORDER_PAGES && KPageFlags::can_combine(ty, b.flags)
+        (total_len + b.len()) <= MAX_ORDER_PAGES && KPageFlags::can_combine(ty, b.flags)
     }
 
     fn combine(vals: &[Self]) -> Self {
@@ -217,7 +217,7 @@ impl MarkovLabel for CombinedGFPRegion {
 impl Combinable for CombinedGFPRegion {
     fn combinable(a: &[Self], b: &Self) -> bool {
         let total_len: u64 = a.iter().map(|r| r.npages).sum();
-        a[0].flags == b.flags && (total_len + b.npages) < MAX_ORDER_PAGES
+        a[0].flags == b.flags && (total_len + b.npages) <= MAX_ORDER_PAGES
     }
 
     fn combine(vals: &[Self]) -> Self {
