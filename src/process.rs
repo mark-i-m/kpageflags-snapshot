@@ -111,7 +111,7 @@ pub fn map_and_summary<R: Read, K: Flaggy>(
                 total += size;
             }
 
-            let size = if size >= 1024 {
+            let size = if size >= MAX_ORDER_PAGES {
                 format!("{:6}MB", size >> 10)
             } else {
                 format!("{size:6}KB")
