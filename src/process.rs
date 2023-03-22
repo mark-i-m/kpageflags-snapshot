@@ -313,9 +313,10 @@ fn clean_flags<K: Flaggy>(
             else if region.flags.all(K::PRIVATE2) {
                 unreachable!();
             }
-            // Pinned pages.
+            // Pinned pages. Unfortuately, not a good way to tell if it should be slab or none, but
+            // slab is less likely than none...
             else {
-                region.flags |= KPageFlags::from(K::SLAB);
+                region.flags = KPageFlags::empty();
             }
         }
 
